@@ -1,0 +1,20 @@
+[Unit]
+Description=NetQuality UDP/TCP reflector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/netquality-reflector -bind 0.0.0.0 -tcp-port 19090 -udp-port 19091
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+# Optional shared token. Uncomment and set a short passphrase (max 32 bytes).
+# Environment=NQ_TOKEN=replace-me
+
+[Install]
+WantedBy=multi-user.target
