@@ -97,3 +97,9 @@ cd client && flutter analyze && flutter test
 ```
 
 Android 安装包是按 CPU 分开的 release 包，使用调试证书，只适合测试安装，不是应用商店签名。当前版本名 `1.1.1`。
+
+## 许可
+
+Copyright (C) 2026 灸 言
+
+本项目以 GNU Affero General Public License v3.0 许可（SPDX 标识：AGPL-3.0-only）。你可以在遵守该许可的前提下使用、修改和分发。完整条款见仓库根目录的 [LICENSE](LICENSE)。

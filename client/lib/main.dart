@@ -1,3 +1,6 @@
+// Copyright (C) 2026 灸 言
+// SPDX-License-Identifier: AGPL-3.0-only
+
 import 'package:flutter/material.dart';
 
 import 'ui/home_page.dart';
