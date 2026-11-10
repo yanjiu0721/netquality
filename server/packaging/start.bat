@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 cd /d "%~dp0"
 echo 正在启动网络质量探测节点。端口和口令请改同目录下的 .env
 netquality-reflector.exe
