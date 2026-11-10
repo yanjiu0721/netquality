@@ -5,16 +5,16 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/netquality-reflector -bind 0.0.0.0 -tcp-port 19090 -udp-port 19091
+# 端口、回显口令和模式写在 /opt/netquality/.env。
+# 默认 NQ_MODE=reflector，只做反射。改完 .env 后执行 systemctl restart。
+WorkingDirectory=/opt/netquality
+ExecStart=/opt/netquality/netquality-reflector
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-
-# Optional shared token. Uncomment and set a short passphrase (max 32 bytes).
-# Environment=NQ_TOKEN=replace-me
 
 [Install]
 WantedBy=multi-user.target

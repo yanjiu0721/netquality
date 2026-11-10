@@ -1,0 +1,19 @@
+[Unit]
+Description=网络质量探测节点
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 程序和 .env 放在同一目录。端口、口令、模式都改 .env，不要改这一行。
+WorkingDirectory=/opt/netquality
+ExecStart=/opt/netquality/netquality-reflector
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -71,12 +71,12 @@ flutter run -d linux
 
 步骤、公开/口令两种例子、防火墙和 HTTPS 在 [docs/server-linux.md](docs/server-linux.md)。不要把真实口令写进仓库或命令历史以外的公开地方。
 
-只做反射，给本机或节点回显用：
+只做反射，给本机或节点回显用。端口和口令写在 `server/.env`，不改就是 TCP `19090`、UDP `19091`：
 
 ```bash
 cd server
 go build -o netquality-reflector .
-./netquality-reflector -bind 0.0.0.0 -tcp-port 19090 -udp-port 19091
+./netquality-reflector
 ```
 
 同一台机器既回显、又替手机探测别的目标：

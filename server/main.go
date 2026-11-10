@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"flag"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -16,49 +16,29 @@ import (
 )
 
 func main() {
-	bind := flag.String("bind", envStr("NQ_BIND", "0.0.0.0"), "reflector bind address")
-	tcpPort := flag.Int("tcp-port", envInt("NQ_TCP_PORT", 19090), "TCP echo port (0 disables)")
-	udpPort := flag.Int("udp-port", envInt("NQ_UDP_PORT", 19091), "UDP echo port (0 disables)")
-	tokenFlag := flag.String("token", envStr("NQ_TOKEN", ""), "optional echo token written into NQ frames, max 32 bytes; empty accepts any echo token")
-	nodeToken := flag.String("node-token", envStr("NQ_NODE_TOKEN", ""), "optional control-plane token; empty makes the node public")
-	mode := flag.String("mode", envStr("NQ_MODE", "reflector"), "reflector, node, or both")
-	controlAddr := flag.String("control-addr", envStr("NQ_CONTROL_ADDR", "127.0.0.1:8443"), "node control listen address")
-	allowPrivate := flag.Bool("allow-private", envBool("NQ_ALLOW_PRIVATE", false), "let the node probe loopback and private addresses (metadata stays blocked)")
-	allowNets := flag.String("allow-nets", envStr("NQ_ALLOW_NETS", ""), "comma-separated extra CIDRs the node may probe")
-	tlsCert := flag.String("tls-cert", envStr("NQ_TLS_CERT", ""), "TLS certificate for the control API")
-	tlsKey := flag.String("tls-key", envStr("NQ_TLS_KEY", ""), "TLS private key for the control API")
-	verbose := flag.Bool("v", false, "log each echoed packet")
-	flag.Parse()
+	cfg, err := loadConfig(os.Args[1:], os.Environ())
+	if err != nil {
+		if errors.Is(err, errHelp) {
+			os.Exit(0)
+		}
+		log.Fatal(err)
+	}
+	log.Printf("%s", cfg.Summary())
 
-	switch *mode {
-	case "reflector", "node", "both":
-	default:
-		log.Fatal("-mode must be reflector, node, or both")
-	}
-	if *tcpPort < 0 || *tcpPort > 65535 || *udpPort < 0 || *udpPort > 65535 {
-		log.Fatal("ports must be between 0 and 65535")
-	}
-	if (*mode == "reflector" || *mode == "both") && *tcpPort == 0 && *udpPort == 0 {
-		log.Fatal("reflector mode needs -tcp-port and/or -udp-port")
-	}
-	if (*tlsCert == "") != (*tlsKey == "") {
-		log.Fatal("-tls-cert and -tls-key must be set together")
-	}
-
-	tok, err := tokenBytes(*tokenFlag)
+	tok, err := tokenBytes(cfg.Token)
 	if err != nil {
 		log.Fatal(err)
 	}
-	extra, err := parseNets(*allowNets)
+	extra, err := parseNets(cfg.AllowNets)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	errCh := make(chan error, 4)
 	var srv *Server
-	if *mode == "reflector" || *mode == "both" {
-		srv = &Server{Token: tok, Required: *tokenFlag != "", Verbose: *verbose}
-		startReflector(srv, *bind, *tcpPort, *udpPort, errCh)
+	if cfg.Mode == "reflector" || cfg.Mode == "both" {
+		srv = &Server{Token: tok, Required: cfg.Token != "", Verbose: cfg.Verbose}
+		startReflector(srv, cfg.Bind, cfg.TCPPort, cfg.UDPPort, errCh)
 		if srv.Required {
 			log.Printf("echo token check enabled")
 		} else {
@@ -67,23 +47,23 @@ func main() {
 	}
 
 	var httpSrv *http.Server
-	if *mode == "node" || *mode == "both" {
-		node := newNode(*nodeToken, *allowPrivate, extra, defaultLimits())
+	if cfg.Mode == "node" || cfg.Mode == "both" {
+		node := newNode(cfg.NodeToken, cfg.AllowPrivate, extra, defaultLimits())
 		httpSrv = &http.Server{
-			Addr:              *controlAddr,
+			Addr:              cfg.ControlAddr,
 			Handler:           node.Handler(),
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       2 * time.Minute,
 		}
-		ln, err := net.Listen("tcp", *controlAddr)
+		ln, err := net.Listen("tcp", cfg.ControlAddr)
 		if err != nil {
-			log.Fatalf("control listen %s: %v", *controlAddr, err)
+			log.Fatalf("control listen %s: %v", cfg.ControlAddr, err)
 		}
 		go func() {
 			var serveErr error
-			if *tlsCert != "" {
+			if cfg.TLSCert != "" {
 				log.Printf("node control listening with TLS on %s", ln.Addr())
-				serveErr = httpSrv.ServeTLS(ln, *tlsCert, *tlsKey)
+				serveErr = httpSrv.ServeTLS(ln, cfg.TLSCert, cfg.TLSKey)
 			} else {
 				log.Printf("node control listening on %s (no TLS; put an HTTPS reverse proxy in front if this is reachable from the internet)", ln.Addr())
 				serveErr = httpSrv.Serve(ln)
@@ -92,15 +72,15 @@ func main() {
 				errCh <- serveErr
 			}
 		}()
-		if node.Public() && !loopbackHost(*controlAddr) {
-			log.Printf("WARNING: this node is PUBLIC. Anyone who can reach %s can start bounded probes. Set -node-token to require a control token. Caps stay on: jobs=%d duration=%s interval>=%s probes/s=%d bandwidth=%dB/s",
-				*controlAddr, node.Limits.MaxJobs, node.Limits.MaxDuration, node.Limits.MinInterval, node.Limits.MaxProbePerSec, node.Limits.MaxBytesPerSec)
+		if node.Public() && !loopbackHost(cfg.ControlAddr) {
+			log.Printf("WARNING: this node is PUBLIC. Anyone who can reach %s can start bounded probes. Set NQ_NODE_TOKEN or -node-token to require a control token. Caps stay on: jobs=%d duration=%s interval>=%s probes/s=%d bandwidth=%dB/s",
+				cfg.ControlAddr, node.Limits.MaxJobs, node.Limits.MaxDuration, node.Limits.MinInterval, node.Limits.MaxProbePerSec, node.Limits.MaxBytesPerSec)
 		} else if node.Public() {
 			log.Printf("node is public and bound to loopback; no control token is required")
 		} else {
 			log.Printf("node is private; a control token is required and is not logged")
 		}
-		if *allowPrivate {
+		if cfg.AllowPrivate {
 			log.Printf("private and loopback targets are allowed; metadata addresses stay blocked")
 		}
 	}
@@ -213,38 +193,4 @@ func loopbackHost(addr string) bool {
 	host = strings.Trim(host, "[]")
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
-}
-
-func envStr(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok && v != "" {
-		return v
-	}
-	return fallback
-}
-
-func envInt(key string, fallback int) int {
-	v, ok := os.LookupEnv(key)
-	if !ok || v == "" {
-		return fallback
-	}
-	n, err := strconv.Atoi(v)
-	if err != nil {
-		return fallback
-	}
-	return n
-}
-
-func envBool(key string, fallback bool) bool {
-	v, ok := os.LookupEnv(key)
-	if !ok || v == "" {
-		return fallback
-	}
-	switch strings.ToLower(v) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return fallback
-	}
 }

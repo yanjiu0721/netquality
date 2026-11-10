@@ -31,7 +31,7 @@ go build -o netquality-reflector .
 - TCP `0.0.0.0:19090`
 - UDP `0.0.0.0:19091`
 
-看到两行 `listening` 就说明起来了。另开一个终端可以看端口：
+同一目录里有 `.env`。不传参数时，程序会读它。启动后会打一行「生效配置」，口令只显示有没有设置，不会把口令打出来。看到 `listening` 就说明起来了。另开一个终端可以看端口：
 
 ```bash
 ss -ltnp | grep 19090
@@ -40,7 +40,11 @@ ss -lunp | grep 19091
 
 用 `Ctrl+C` 停止。确认客户端能连上之后，再做成开机自启。
 
-常用参数：
+平常改 `.env` 就行，不必记命令行参数。文件里每一项都有中文注释，默认值就是下面这些端口。程序所在目录和当前目录都会找 `.env`；找不到不算错误。指定别的文件用 `-env /路径/.env`，这个文件必须存在。
+
+优先级：命令行参数 > 环境变量 > `.env` > 内置默认值。
+
+仍可以用参数临时覆盖 `.env`：
 
 ```bash
 ./netquality-reflector -bind 0.0.0.0 -tcp-port 19090 -udp-port 19091
@@ -49,33 +53,37 @@ ss -lunp | grep 19091
 ./netquality-reflector -h
 ```
 
-也可以用环境变量：`NQ_BIND`、`NQ_TCP_PORT`、`NQ_UDP_PORT`、`NQ_TOKEN`（回显口令）、`NQ_MODE`、`NQ_CONTROL_ADDR`、`NQ_NODE_TOKEN`（节点口令）、`NQ_ALLOW_PRIVATE`、`NQ_TLS_CERT`、`NQ_TLS_KEY`。
+对应的环境变量和 `.env` 键：`NQ_BIND`、`NQ_TCP_PORT`、`NQ_UDP_PORT`、`NQ_TOKEN`（回显口令）、`NQ_MODE`、`NQ_CONTROL_ADDR`、`NQ_NODE_TOKEN`（节点口令）、`NQ_ALLOW_PRIVATE`、`NQ_ALLOW_NETS`、`NQ_TLS_CERT`、`NQ_TLS_KEY`、`NQ_VERBOSE`。
+
+给别人直接运行的说明在 [server/README.md](../server/README.md)。`.env` 和 `.env.example` 内容相同，都是默认可运行的配置。
 
 ## 3. 做成系统服务
 
+发布包解压后，程序和 `.env` 已经在一起。装到 `/opt/netquality`：
+
 ```bash
-cd /opt/netquality/server
-go build -o netquality-reflector .
-sudo install -m 0755 netquality-reflector /usr/local/bin/netquality-reflector
-sudo cp deploy/netquality-reflector.service /etc/systemd/system/netquality-reflector.service
+sudo mkdir -p /opt/netquality
+sudo tar -C /opt/netquality --strip-components=1 -xzf netquality-server-1.1.1-linux-amd64.tar.gz
+sudo cp /opt/netquality/netquality.service /etc/systemd/system/netquality.service
 sudo systemctl daemon-reload
-sudo systemctl enable --now netquality-reflector
-sudo systemctl status netquality-reflector
+sudo systemctl enable --now netquality
+sudo systemctl status netquality
 ```
+
+从源码编译时，把二进制和 `.env` 放在同一目录，服务文件用 `deploy/netquality.service`（或 `deploy/netquality-reflector.service`）。两份都不再在 `ExecStart` 里写端口，避免盖过 `.env`。
 
 日志：
 
 ```bash
-journalctl -u netquality-reflector -f
+journalctl -u netquality -f
 ```
 
 大约每分钟会打一行统计：收到多少请求、回了多少、拒绝了多少。
 
-要加口令时，编辑服务文件，去掉 `NQ_TOKEN` 那一行的注释并写成你自己的口令，然后：
+要加口令时，编辑 `/opt/netquality/.env` 里的 `NQ_TOKEN`，保存后：
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl restart netquality-reflector
+sudo systemctl restart netquality
 ```
 
 App 里的「口令」必须和这里完全一致。口令是明文写在探测包里的，只能挡住无关的随机访问，不能当密码学上的加密。
@@ -136,7 +144,7 @@ sudo firewall-cmd --reload
 
 `-token` 是另一回事，它写进反射帧，只在别人来连你的 19090/19091 时使用。App 里对应「目标回显口令」。节点口令对应「管理节点」里的那一栏。
 
-要开机启动节点，可以用 `deploy/netquality-node.service`。编辑里面的环境变量注释，再：
+要开机启动节点，把 `.env` 里的 `NQ_MODE` 改成 `node` 或 `both`，用上面的 `netquality.service` 即可。`deploy/netquality-node.service` 会额外设置 `NQ_MODE=both`，从而盖过 `.env` 里的模式；端口和口令仍然来自 `.env`。不要和反射服务同时启用。
 
 ```bash
 sudo cp deploy/netquality-node.service /etc/systemd/system/netquality-node.service

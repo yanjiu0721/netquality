@@ -5,19 +5,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/netquality-reflector -mode both -bind 0.0.0.0 -tcp-port 19090 -udp-port 19091 -control-addr 127.0.0.1:8443
+# 端口和口令写在 /opt/netquality/.env。
+# 这份服务通过环境变量把模式固定成 both（反射 + 节点），会盖过 .env 里的 NQ_MODE。
+# 节点口令请改 .env 的 NQ_NODE_TOKEN，不要把真实口令写进本文件。
+WorkingDirectory=/opt/netquality
+Environment=NQ_MODE=both
+ExecStart=/opt/netquality/netquality-reflector
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-
-# 二选一，不要把真实口令提交到仓库。
-# 留空或不设置 NQ_NODE_TOKEN：公开节点，任何人都能用，但有并发和时长上限。
-# Environment=NQ_NODE_TOKEN=replace-with-your-own-node-token
-# 下面这个是反射帧里的回显口令，和节点口令不是同一个。
-# Environment=NQ_TOKEN=replace-with-your-own-echo-token
 
 [Install]
 WantedBy=multi-user.target
