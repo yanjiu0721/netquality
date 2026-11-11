@@ -1,4 +1,4 @@
-// Copyright (C) 2026 灸 言
+// Copyright (C) 2026 言灸
 // SPDX-License-Identifier: AGPL-3.0-only
 
 package main
