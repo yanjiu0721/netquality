@@ -127,7 +127,7 @@ func (p *nqTCP) Close() error {
 }
 
 func (p *nqTCP) dial(ctx context.Context) error {
-	conn, err := dialTCP(ctx, p.spec.IP, p.spec.Port)
+	conn, err := dialSpecTCP(ctx, &p.spec)
 	if err != nil {
 		return err
 	}
@@ -208,11 +208,9 @@ func (p *nqUDP) Close() error {
 }
 
 func (p *nqUDP) ensure() error {
-	if p.conn != nil {
-		return nil
-	}
-	c, err := dialUDP(p.spec.IP, p.spec.Port)
+	c, err := ensureUDP(p.conn, p.spec)
 	if err != nil {
+		p.conn = nil
 		return err
 	}
 	p.conn = c
@@ -273,7 +271,7 @@ func (p *tcpConnect) Close() error { return nil }
 
 func (p *tcpConnect) Probe(ctx context.Context) Outcome {
 	start := time.Now()
-	conn, err := dialTCP(ctx, p.spec.IP, p.spec.Port)
+	conn, err := dialSpecTCP(ctx, &p.spec)
 	if err != nil {
 		return classifyDial(err)
 	}
@@ -297,13 +295,12 @@ func (p *udpQuery) Close() error {
 }
 
 func (p *udpQuery) Probe(ctx context.Context) Outcome {
-	if p.conn == nil {
-		c, err := dialUDP(p.spec.IP, p.spec.Port)
-		if err != nil {
-			return classifyDial(err)
-		}
-		p.conn = c
+	c, err := ensureUDP(p.conn, p.spec)
+	if err != nil {
+		p.conn = nil
+		return classifyDial(err)
 	}
+	p.conn = c
 	payload := p.spec.Payload
 	if p.generic {
 		n := p.spec.PacketSize
@@ -358,13 +355,12 @@ func (p *dnsQuery) Close() error {
 }
 
 func (p *dnsQuery) Probe(ctx context.Context) Outcome {
-	if p.conn == nil {
-		c, err := dialUDP(p.spec.IP, p.spec.Port)
-		if err != nil {
-			return classifyDial(err)
-		}
-		p.conn = c
+	c, err := ensureUDP(p.conn, p.spec)
+	if err != nil {
+		p.conn = nil
+		return classifyDial(err)
 	}
+	p.conn = c
 	p.id++
 	if p.id == 0 {
 		p.id = 1
@@ -449,12 +445,14 @@ func (p *mcBedrock) Close() error {
 }
 
 func (p *mcBedrock) Probe(ctx context.Context) Outcome {
-	if p.conn == nil {
-		c, err := dialUDP(p.spec.IP, p.spec.Port)
-		if err != nil {
-			return classifyDial(err)
-		}
-		p.conn = c
+	fresh := p.conn == nil
+	c, err := ensureUDP(p.conn, p.spec)
+	if err != nil {
+		p.conn = nil
+		return classifyDial(err)
+	}
+	p.conn = c
+	if fresh || p.guid == 0 {
 		p.guid = uint64(time.Now().UnixNano())
 	}
 	ts := uint64(time.Now().UnixNano())
@@ -529,7 +527,7 @@ type mcJava struct{ spec jobSpec }
 func (p *mcJava) Close() error { return nil }
 
 func (p *mcJava) Probe(ctx context.Context) Outcome {
-	conn, err := dialTCP(ctx, p.spec.IP, p.spec.Port)
+	conn, err := dialSpecTCP(ctx, &p.spec)
 	if err != nil {
 		return classifyDial(err)
 	}

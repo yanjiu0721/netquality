@@ -3,7 +3,9 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import '../metrics/sample_book.dart';
+import '../metrics/selection_ledger.dart';
 import '../protocol/probe_packet.dart';
+import '../ui/address_text.dart';
 import 'endpoint_picker.dart';
 import 'game_codec.dart';
 
@@ -36,10 +38,7 @@ class ProbeRequest {
 /// Sends one probe at a time from this device. A cancelled attempt is not
 /// recorded, so stopping cannot paint a fake loss sample.
 class ProbeLoop {
-  ProbeLoop({
-    this.lookup,
-    this.onEndpoint,
-  });
+  ProbeLoop({this.lookup, this.onEndpoint, this.onResolved});
 
   /// Replaces [lookupAll] in tests.
   final Future<List<InternetAddress>> Function(String host)? lookup;
@@ -47,10 +46,16 @@ class ProbeLoop {
   /// Fires when the address about to be used is chosen or changed.
   final void Function(InternetAddress address)? onEndpoint;
 
+  /// Fires once with the lookup result. This is not the address in use.
+  final void Function(List<InternetAddress> addresses)? onResolved;
+
   _TcpPipe? _tcp;
   _UdpPipe? _udp;
   EndpointPicker? _picker;
+  SelectionLedger? _ledger;
   InternetAddress? _announced;
+  InternetAddress? _tcpUsed;
+  List<InternetAddress>? _resolved;
   int _seq = 0;
   int _dnsId = 1;
   final int _guid = DateTime.now().microsecondsSinceEpoch;
@@ -65,20 +70,32 @@ class ProbeLoop {
       while (!cancelled()) {
         final started = DateTime.now();
         final outcome = await _once(request, cancelled);
-        if (cancelled() || outcome == null) {
+        if (!countsAfterStop(outcome, cancelled: cancelled())) {
           break;
         }
-        if (_usesDatagram(request.profileId)) {
-          final responded = outcome.status == Outcome.ok ||
-              outcome.status == Outcome.protocol ||
-              outcome.status == Outcome.refused;
-          if (_picker != null && _picker!.record(responded)) {
+        var commit = <Outcome>[outcome!];
+        if (_usesDatagram(request.profileId) && _picker != null) {
+          _ledger ??= SelectionLedger(_picker!.candidates.length);
+          final responded = selectionResponded(outcome);
+          final wasMeasuring = _ledger!.measuring;
+          final changed = _picker!.record(responded);
+          final decision = _ledger!.take(outcome, responded: responded);
+          if (wasMeasuring && changed) {
+            _ledger!.endMeasurement();
+          }
+          if (changed) {
             await _dropUdp();
             _announce(_picker!.current);
           }
+          commit = decision.commit;
+          if (commit.isEmpty) {
+            continue;
+          }
         }
-        book.add(outcome);
-        onSample(book.sample(book.sent, outcome));
+        for (final item in commit) {
+          book.add(item);
+          onSample(book.sample(book.sent, item));
+        }
         final spent = DateTime.now().difference(started);
         final rest = request.interval - spent;
         if (!cancelled() && rest > Duration.zero) {
@@ -103,7 +120,10 @@ class ProbeLoop {
     }
   }
 
-  Future<Outcome?> _once(ProbeRequest request, bool Function() cancelled) async {
+  Future<Outcome?> _once(
+    ProbeRequest request,
+    bool Function() cancelled,
+  ) async {
     try {
       final outcome = await _dispatch(request, cancelled);
       final peer = _udp?.peer;
@@ -160,45 +180,58 @@ class ProbeLoop {
     ProbeRequest request,
     bool Function() cancelled,
   ) async {
-    final watch = Stopwatch()..start();
-    final socket = await Socket.connect(
-      request.host,
-      request.port,
-      timeout: request.timeout,
-    );
-    watch.stop();
+    final opened = await _openTcp(request, cancelled);
+    final failure = opened.failure;
+    if (failure != null) {
+      return failure;
+    }
+    final socket = opened.socket!;
+    opened.watch?.stop();
     await socket.close();
     if (cancelled()) {
-      return const Outcome(status: Outcome.timeout, kind: Outcome.connect, note: '已停止');
+      return const Outcome(
+        status: Outcome.timeout,
+        kind: Outcome.connect,
+        note: '已停止',
+      );
     }
-    return Outcome(
-      status: Outcome.ok,
-      kind: Outcome.connect,
-      rttMs: watch.elapsedMicroseconds / 1000,
-      note: 'TCP 已连通',
+    return _withUsed(
+      Outcome(
+        status: Outcome.ok,
+        kind: Outcome.connect,
+        rttMs: (opened.watch?.elapsedMicroseconds ?? 0) / 1000,
+        note: 'TCP 已连通',
+      ),
+      opened.used,
+      opened.fallback,
+      opened.skipped,
     );
   }
 
-  Future<Outcome> _nqTcp(ProbeRequest request, bool Function() cancelled) async {
+  Future<Outcome> _nqTcp(
+    ProbeRequest request,
+    bool Function() cancelled,
+  ) async {
+    var fallback = '';
+    var skipped = 0;
     if (_tcp == null) {
-      try {
-        final socket = await Socket.connect(
-          request.host,
-          request.port,
-          timeout: request.timeout,
-        );
-        socket.setOption(SocketOption.tcpNoDelay, true);
-        _tcp = _TcpPipe(socket);
-      } on SocketException catch (error) {
-        return classifySocket(error, reconnect: true);
-      } on TimeoutException {
-        return const Outcome(
-          status: Outcome.timeout,
-          kind: Outcome.connect,
-          reconnect: true,
-          note: '连接超时，将重试',
+      final opened = await _openTcp(request, cancelled);
+      final failure = opened.failure;
+      if (failure != null) {
+        return Outcome(
+          status: failure.status,
+          kind: failure.kind,
+          note: failure.note,
+          reconnect: failure.note != '已停止',
+          detail: failure.detail,
         );
       }
+      final socket = opened.socket!;
+      socket.setOption(SocketOption.tcpNoDelay, true);
+      _tcp = _TcpPipe(socket);
+      _tcpUsed = opened.used;
+      fallback = opened.fallback;
+      skipped = opened.skipped;
     }
     final pipe = _tcp!;
     _seq += 1;
@@ -232,21 +265,35 @@ class ProbeLoop {
       }
     });
     if (cancelled()) {
-      return const Outcome(status: Outcome.timeout, kind: Outcome.connect, note: '已停止');
+      return const Outcome(
+        status: Outcome.timeout,
+        kind: Outcome.connect,
+        note: '已停止',
+      );
     }
     if (matched == null) {
       await _dropTcp();
-      return const Outcome(
-        status: Outcome.timeout,
-        kind: Outcome.probe,
-        note: '已发出探测，超时前没有收到回显。TCP 会重传，这不是已证实的物理丢包',
+      return _withUsed(
+        const Outcome(
+          status: Outcome.timeout,
+          kind: Outcome.probe,
+          note: '已发出探测，超时前没有收到回显。TCP 会重传，这不是已证实的物理丢包',
+        ),
+        _tcpUsed,
+        fallback,
+        skipped,
       );
     }
-    return Outcome(
-      status: Outcome.ok,
-      kind: Outcome.probe,
-      rttMs: watch.elapsedMicroseconds / 1000,
-      note: '收到回显',
+    return _withUsed(
+      Outcome(
+        status: Outcome.ok,
+        kind: Outcome.probe,
+        rttMs: watch.elapsedMicroseconds / 1000,
+        note: '收到回显',
+      ),
+      _tcpUsed,
+      fallback,
+      skipped,
     );
   }
 
@@ -258,7 +305,10 @@ class ProbeLoop {
     }
   }
 
-  Future<Outcome> _nqUdp(ProbeRequest request, bool Function() cancelled) async {
+  Future<Outcome> _nqUdp(
+    ProbeRequest request,
+    bool Function() cancelled,
+  ) async {
     final pipe = await _datagram(request);
     _seq += 1;
     final seq = _seq;
@@ -286,7 +336,11 @@ class ProbeLoop {
       }
     });
     if (cancelled()) {
-      return const Outcome(status: Outcome.unknown, kind: Outcome.query, note: '已停止');
+      return const Outcome(
+        status: Outcome.unknown,
+        kind: Outcome.query,
+        note: '已停止',
+      );
     }
     if (reply == null) {
       if (sawInvalid) {
@@ -329,7 +383,11 @@ class ProbeLoop {
     pipe.send(payload, request.port);
     final reply = await pipe.waitMatch(request.timeout, (_) => true);
     if (cancelled()) {
-      return const Outcome(status: Outcome.unknown, kind: Outcome.query, note: '已停止');
+      return const Outcome(
+        status: Outcome.unknown,
+        kind: Outcome.query,
+        note: '已停止',
+      );
     }
     if (reply == null) {
       return const Outcome(
@@ -339,7 +397,8 @@ class ProbeLoop {
       );
     }
     final wanted = expect;
-    if (wanted != null && (reply.length < wanted.length || !_prefix(reply, wanted))) {
+    if (wanted != null &&
+        (reply.length < wanted.length || !_prefix(reply, wanted))) {
       return const Outcome(
         status: Outcome.protocol,
         kind: Outcome.query,
@@ -358,7 +417,9 @@ class ProbeLoop {
     final pipe = await _datagram(request);
     _dnsId = _dnsId == 65535 ? 1 : _dnsId + 1;
     final id = _dnsId;
-    final name = request.dnsName.trim().isEmpty ? 'example.com' : request.dnsName.trim();
+    final name = request.dnsName.trim().isEmpty
+        ? 'example.com'
+        : request.dnsName.trim();
     final watch = Stopwatch()..start();
     pipe.send(dnsQuery(id, name), request.port);
     var malformed = false;
@@ -378,7 +439,11 @@ class ProbeLoop {
       return true;
     });
     if (cancelled()) {
-      return const Outcome(status: Outcome.unknown, kind: Outcome.query, note: '已停止');
+      return const Outcome(
+        status: Outcome.unknown,
+        kind: Outcome.query,
+        note: '已停止',
+      );
     }
     if (reply == null) {
       if (malformed) {
@@ -422,7 +487,11 @@ class ProbeLoop {
       return true;
     });
     if (cancelled()) {
-      return const Outcome(status: Outcome.unknown, kind: Outcome.query, note: '已停止');
+      return const Outcome(
+        status: Outcome.unknown,
+        kind: Outcome.query,
+        note: '已停止',
+      );
     }
     if (reply == null) {
       if (sawInvalid) {
@@ -448,11 +517,12 @@ class ProbeLoop {
   }
 
   Future<Outcome> _java(ProbeRequest request, bool Function() cancelled) async {
-    final socket = await Socket.connect(
-      request.host,
-      request.port,
-      timeout: request.timeout,
-    );
+    final opened = await _openTcp(request, cancelled);
+    final failure = opened.failure;
+    if (failure != null) {
+      return failure;
+    }
+    final socket = opened.socket!;
     final reader = _BytePipe(socket);
     try {
       socket.add(javaHandshake(request.host, request.port));
@@ -460,18 +530,28 @@ class ProbeLoop {
       await socket.flush();
       final status = await reader.nextPacket(request.timeout);
       if (status == null || status.isEmpty || status[0] != 0x00) {
-        return const Outcome(
-          status: Outcome.protocol,
-          kind: Outcome.query,
-          note: 'Minecraft 状态响应无效',
+        return _withUsed(
+          const Outcome(
+            status: Outcome.protocol,
+            kind: Outcome.query,
+            note: 'Minecraft 状态响应无效',
+          ),
+          opened.used,
+          opened.fallback,
+          opened.skipped,
         );
       }
       final jsonText = readMcString(status, 1);
       if (jsonText == null) {
-        return const Outcome(
-          status: Outcome.protocol,
-          kind: Outcome.query,
-          note: 'Minecraft 状态内容无法解析',
+        return _withUsed(
+          const Outcome(
+            status: Outcome.protocol,
+            kind: Outcome.query,
+            note: 'Minecraft 状态内容无法解析',
+          ),
+          opened.used,
+          opened.fallback,
+          opened.skipped,
         );
       }
       final detail = minecraftStatusDetail(jsonText);
@@ -481,30 +561,49 @@ class ProbeLoop {
       await socket.flush();
       final pong = await reader.nextPacket(request.timeout);
       if (cancelled()) {
-        return const Outcome(status: Outcome.timeout, kind: Outcome.connect, note: '已停止');
+        return const Outcome(
+          status: Outcome.timeout,
+          kind: Outcome.connect,
+          note: '已停止',
+        );
       }
       if (pong == null || pong.length != 9 || pong[0] != 0x01) {
-        return Outcome(
-          status: Outcome.protocol,
-          kind: Outcome.query,
-          note: '没有收到有效的 Minecraft pong',
-          detail: detail,
+        return _withUsed(
+          Outcome(
+            status: Outcome.protocol,
+            kind: Outcome.query,
+            note: '没有收到有效的 Minecraft pong',
+            detail: detail,
+          ),
+          opened.used,
+          opened.fallback,
+          opened.skipped,
         );
       }
       if (ByteData.sublistView(pong).getUint64(1) != nonce) {
-        return Outcome(
-          status: Outcome.protocol,
-          kind: Outcome.query,
-          note: 'Minecraft pong 的时间戳不匹配',
-          detail: detail,
+        return _withUsed(
+          Outcome(
+            status: Outcome.protocol,
+            kind: Outcome.query,
+            note: 'Minecraft pong 的时间戳不匹配',
+            detail: detail,
+          ),
+          opened.used,
+          opened.fallback,
+          opened.skipped,
         );
       }
-      return Outcome(
-        status: Outcome.ok,
-        kind: Outcome.query,
-        rttMs: watch.elapsedMicroseconds / 1000,
-        note: '收到 Minecraft 状态和 ping 应答',
-        detail: detail,
+      return _withUsed(
+        Outcome(
+          status: Outcome.ok,
+          kind: Outcome.query,
+          rttMs: watch.elapsedMicroseconds / 1000,
+          note: '收到 Minecraft 状态和 ping 应答',
+          detail: detail,
+        ),
+        opened.used,
+        opened.fallback,
+        opened.skipped,
       );
     } finally {
       await reader.close();
@@ -513,7 +612,7 @@ class ProbeLoop {
   }
 
   Future<_UdpPipe> _datagram(ProbeRequest request) async {
-    _picker ??= EndpointPicker(await (lookup ?? lookupAll)(request.host));
+    _picker ??= EndpointPicker(await _addresses(request.host));
     final want = _picker!.current;
     final existing = _udp;
     if (existing != null && existing.peer.address == want.address) {
@@ -550,6 +649,134 @@ class ProbeLoop {
       await udp.close();
     }
   }
+
+  Future<List<InternetAddress>> _addresses(String host) async {
+    final cached = _resolved;
+    if (cached != null) {
+      return cached;
+    }
+    final found = await (lookup ?? lookupAll)(host);
+    _resolved = found;
+    onResolved?.call(found);
+    return found;
+  }
+
+  Future<_TcpOpen> _openTcp(
+    ProbeRequest request,
+    bool Function() cancelled,
+  ) async {
+    List<InternetAddress> addresses;
+    try {
+      addresses = await _addresses(request.host);
+    } on SocketException catch (error) {
+      return _TcpOpen.fail(classifySocket(error));
+    }
+    final skipped = <String>[];
+    Object? last;
+    for (final address in addresses) {
+      if (cancelled()) {
+        return _TcpOpen.fail(
+          const Outcome(
+            status: Outcome.timeout,
+            kind: Outcome.connect,
+            note: '已停止',
+          ),
+        );
+      }
+      _announce(address);
+      final watch = Stopwatch()..start();
+      try {
+        final socket = await Socket.connect(
+          address,
+          request.port,
+          timeout: request.timeout,
+        );
+        watch.stop();
+        final fallback = skipped.isEmpty
+            ? ''
+            : '候选未连通：${skipped.join('；')}。已改用 ${address.address}（${addressFamily(address)}）。这些失败没有计入正式丢包或失败率。';
+        return _TcpOpen.ok(socket, address, watch, fallback, skipped.length);
+      } on SocketException catch (error) {
+        last = error;
+        skipped.add(
+          '${addressFamily(address)} ${address.address}：${classifySocket(error).note}',
+        );
+      } on TimeoutException {
+        last = TimeoutException('连接超时');
+        skipped.add('${addressFamily(address)} ${address.address}：连接超时');
+      }
+    }
+    final failure = last is SocketException
+        ? classifySocket(last)
+        : const Outcome(
+            status: Outcome.timeout,
+            kind: Outcome.connect,
+            note: '连接超时',
+          );
+    final attempted = skipped.join('；');
+    return _TcpOpen.fail(
+      Outcome(
+        status: failure.status,
+        kind: failure.kind,
+        note: skipped.length > 1 ? '没有地址连通。$attempted' : failure.note,
+        detail: attempted.isEmpty
+            ? const {}
+            : {'fallback': '已尝试 $attempted。没有地址连通，这次记为失败。'},
+      ),
+    );
+  }
+}
+
+class _TcpOpen {
+  const _TcpOpen.ok(
+    this.socket,
+    this.used,
+    this.watch,
+    this.fallback,
+    this.skipped,
+  ) : failure = null;
+
+  const _TcpOpen.fail(this.failure)
+    : socket = null,
+      used = null,
+      watch = null,
+      fallback = '',
+      skipped = 0;
+
+  final Socket? socket;
+  final InternetAddress? used;
+  final Stopwatch? watch;
+  final Outcome? failure;
+  final String fallback;
+  final int skipped;
+}
+
+Outcome _withUsed(
+  Outcome outcome,
+  InternetAddress? used,
+  String fallback,
+  int skipped,
+) {
+  if (used == null && fallback.isEmpty && skipped == 0) {
+    return outcome;
+  }
+  final detail = {...outcome.detail};
+  if (used != null) {
+    detail['address'] = used.address;
+    detail['family'] = addressFamily(used);
+  }
+  if (fallback.isNotEmpty) {
+    detail['fallback'] = fallback;
+  }
+  return Outcome(
+    status: outcome.status,
+    kind: outcome.kind,
+    rttMs: outcome.rttMs,
+    note: outcome.note,
+    reconnect: outcome.reconnect,
+    selectionSkipped: skipped,
+    detail: detail,
+  );
 }
 
 bool _usesDatagram(String profileId) {
@@ -572,7 +799,12 @@ Outcome _stampAddress(Outcome outcome, InternetAddress peer) {
     rttMs: outcome.rttMs,
     note: outcome.note,
     reconnect: outcome.reconnect,
-    detail: {...outcome.detail, 'address': peer.address},
+    selectionSkipped: outcome.selectionSkipped,
+    detail: {
+      ...outcome.detail,
+      'address': peer.address,
+      'family': addressFamily(peer),
+    },
   );
 }
 

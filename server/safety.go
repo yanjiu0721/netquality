@@ -25,8 +25,17 @@ var metadataIP = net.ParseIP("169.254.169.254")
 // Loopback, private, link-local and cloud metadata are rejected unless
 // allowPrivate is set. Metadata addresses stay blocked either way.
 // Every resolved address is checked so a later DNS answer cannot rebind
-// the dial onto a forbidden IP; the caller dials only the returned IP.
+// the dial onto a forbidden IP. targetOK returns the first allowed address;
+// resolveTargets returns every allowed address in resolver order.
 func targetOK(ctx context.Context, resolver resolver, host string, allowPrivate bool, extra []*net.IPNet) (net.IP, error) {
+	ips, err := resolveTargets(ctx, resolver, host, allowPrivate, extra)
+	if err != nil {
+		return nil, err
+	}
+	return ips[0], nil
+}
+
+func resolveTargets(ctx context.Context, resolver resolver, host string, allowPrivate bool, extra []*net.IPNet) ([]net.IP, error) {
 	host = strings.TrimSpace(host)
 	host = strings.Trim(host, "[]")
 	if host == "" {
@@ -39,7 +48,7 @@ func targetOK(ctx context.Context, resolver resolver, host string, allowPrivate 
 		if !ipAllowed(ip, allowPrivate, extra) {
 			return nil, fmt.Errorf("%w: %s", errForbiddenTarget, ip.String())
 		}
-		return ip, nil
+		return []net.IP{ip}, nil
 	}
 	if resolver == nil {
 		resolver = net.DefaultResolver
@@ -65,7 +74,7 @@ func targetOK(ctx context.Context, resolver resolver, host string, allowPrivate 
 	if len(allowed) != len(addrs) {
 		return nil, fmt.Errorf("%w: %s resolved to a mix of public and blocked addresses", errForbiddenTarget, host)
 	}
-	return allowed[0], nil
+	return allowed, nil
 }
 
 func ipAllowed(ip net.IP, allowPrivate bool, extra []*net.IPNet) bool {

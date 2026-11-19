@@ -26,6 +26,7 @@ func main() {
 		}
 		log.Fatal(err)
 	}
+	log.Printf("netquality %s", appVersion)
 	log.Printf("%s", cfg.Summary())
 
 	tok, err := tokenBytes(cfg.Token)

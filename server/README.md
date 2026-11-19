@@ -110,7 +110,7 @@ sudo firewall-cmd --reload
 
 ```bash
 sudo mkdir -p /opt/netquality
-sudo tar -C /opt/netquality --strip-components=1 -xzf netquality-server-1.1.1-linux-amd64.tar.gz
+sudo tar -C /opt/netquality --strip-components=1 -xzf netquality-server-1.1.2-linux-amd64.tar.gz
 sudo chmod 755 /opt/netquality/netquality-reflector
 sudo cp /opt/netquality/netquality.service /etc/systemd/system/netquality.service
 sudo systemctl daemon-reload

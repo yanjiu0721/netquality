@@ -1,3 +1,5 @@
+import 'latency.dart';
+
 class Outcome {
   const Outcome({
     required this.status,
@@ -6,6 +8,7 @@ class Outcome {
     this.note = '',
     this.detail = const {},
     this.reconnect = false,
+    this.selectionSkipped = 0,
   });
 
   final String status;
@@ -14,6 +17,10 @@ class Outcome {
   final String note;
   final Map<String, String> detail;
   final bool reconnect;
+
+  /// Candidate failures folded into this measured attempt. They are not
+  /// themselves samples.
+  final int selectionSkipped;
 
   static const ok = 'ok';
   static const timeout = 'timeout';
@@ -48,6 +55,13 @@ class ProbeSummary {
     required this.unknownPct,
     required this.lastNote,
     required this.detail,
+    this.minRttMs,
+    this.meanRttMs,
+    this.medianRttMs,
+    this.p95RttMs,
+    this.maxRttMs,
+    this.selectionSkipped = 0,
+    this.latencyStats = false,
   });
 
   final int sent;
@@ -68,6 +82,15 @@ class ProbeSummary {
   final double? unknownPct;
   final String lastNote;
   final Map<String, String> detail;
+  final double? minRttMs;
+  final double? meanRttMs;
+  final double? medianRttMs;
+  final double? p95RttMs;
+  final double? maxRttMs;
+  final int selectionSkipped;
+
+  /// False when an older remote node omitted the latency distribution.
+  final bool latencyStats;
 
   static const empty = ProbeSummary(
     sent: 0,
@@ -110,6 +133,16 @@ class ProbeSummary {
       unknownPct: _double(json['unknownPct']),
       lastNote: json['lastNote'] is String ? json['lastNote'] as String : '',
       detail: _detail(json['detail']),
+      minRttMs: _double(json['minRttMs']),
+      meanRttMs: _double(json['meanRttMs']),
+      medianRttMs: _double(json['medianRttMs']),
+      p95RttMs: _double(json['p95RttMs']),
+      maxRttMs: _double(json['maxRttMs']),
+      selectionSkipped: _int(json['selectionSkipped']),
+      latencyStats:
+          json.containsKey('minRttMs') ||
+          json.containsKey('medianRttMs') ||
+          json.containsKey('p95RttMs'),
     );
   }
 }
@@ -137,7 +170,9 @@ class ProbeSample {
 
   factory ProbeSample.fromJson(Map<String, dynamic> json) {
     final summary = json['summary'] is Map
-        ? ProbeSummary.fromJson(Map<String, dynamic>.from(json['summary'] as Map))
+        ? ProbeSummary.fromJson(
+            Map<String, dynamic>.from(json['summary'] as Map),
+          )
         : ProbeSummary.empty;
     return ProbeSample(
       seq: _int(json['seq']),
@@ -171,12 +206,15 @@ class SampleBook {
   double jitterMs = 0;
   bool _hasJitter = false;
   double _lastTransit = 0;
+  final List<double> _rtts = [];
+  int selectionSkipped = 0;
   String lastNote = '';
   Map<String, String> detail = {};
 
   void add(Outcome outcome) {
     sent += 1;
     completed += 1;
+    selectionSkipped += outcome.selectionSkipped;
     if (outcome.reconnect) {
       reconnects += 1;
     }
@@ -193,6 +231,7 @@ class SampleBook {
         final rtt = outcome.rttMs;
         if (rtt != null) {
           lastRttMs = rtt;
+          _rtts.add(rtt);
           if (_hasJitter) {
             final delta = (rtt - _lastTransit).abs();
             jitterMs += (delta - jitterMs) / 16;
@@ -250,6 +289,7 @@ class SampleBook {
         }
       }
     }
+    final latency = LatencyStats.from(_rtts);
     return ProbeSummary(
       sent: sent,
       completed: completed,
@@ -269,6 +309,13 @@ class SampleBook {
       unknownPct: unknownPct,
       lastNote: lastNote,
       detail: detail,
+      minRttMs: latency?.min,
+      meanRttMs: latency?.mean,
+      medianRttMs: latency?.median,
+      p95RttMs: latency?.p95,
+      maxRttMs: latency?.max,
+      selectionSkipped: selectionSkipped,
+      latencyStats: true,
     );
   }
 

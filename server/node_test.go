@@ -163,6 +163,12 @@ func TestNodeNQAndTCPAndUDP(t *testing.T) {
 	if sample.Status != statusOK || sample.RttMs == nil || *sample.RttMs <= 0 {
 		t.Fatalf("nq tcp %+v", sample)
 	}
+	if sample.Detail["address"] != "127.0.0.1" || sample.Detail["family"] != "IPv4" {
+		t.Fatalf("tcp did not report the connected address %+v", sample.Detail)
+	}
+	if sample.Summary.MinRttMs == nil || sample.Summary.P95RttMs == nil {
+		t.Fatalf("latency stats missing %+v", sample.Summary)
+	}
 	if sample.Summary.ProbeLossPct == nil || *sample.Summary.ProbeLossPct != 0 {
 		t.Fatalf("loss %+v", sample.Summary)
 	}

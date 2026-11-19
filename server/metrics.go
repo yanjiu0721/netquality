@@ -19,13 +19,14 @@ const (
 // Outcome is one finished attempt. Pending attempts are never turned into
 // a sample, so a chart cannot show a fake 100% before the probe completes.
 type Outcome struct {
-	Status    string
-	Kind      string
-	Rtt       time.Duration
-	HasRtt    bool
-	Note      string
-	Detail    map[string]string
-	Reconnect bool
+	Status           string
+	Kind             string
+	Rtt              time.Duration
+	HasRtt           bool
+	Note             string
+	Detail           map[string]string
+	Reconnect        bool
+	SelectionSkipped int
 }
 
 type jitter struct {
@@ -64,15 +65,18 @@ type sampleBook struct {
 	reconnect   int
 	consecutive int
 
-	lastRttMs *float64
-	jitter    jitter
-	lastNote  string
-	detail    map[string]string
+	lastRttMs        *float64
+	jitter           jitter
+	rtts             []float64
+	selectionSkipped int
+	lastNote         string
+	detail           map[string]string
 }
 
 func (b *sampleBook) add(o Outcome) {
 	b.sent++
 	b.completed++
+	b.selectionSkipped += o.SelectionSkipped
 	if o.Reconnect {
 		b.reconnect++
 	}
@@ -94,6 +98,7 @@ func (b *sampleBook) add(o Outcome) {
 		if o.HasRtt {
 			ms := float64(o.Rtt) / float64(time.Millisecond)
 			b.lastRttMs = &ms
+			b.rtts = append(b.rtts, ms)
 			b.jitter.push(ms)
 		}
 	case statusTimeout:
@@ -138,6 +143,14 @@ func (b *sampleBook) summary() summaryMsg {
 		ConsecutiveFailures: b.consecutive,
 		LastNote:            b.lastNote,
 		Detail:              b.detail,
+		SelectionSkipped:    b.selectionSkipped,
+	}
+	if min, mean, median, p95, max, ok := latencyOf(b.rtts); ok {
+		s.MinRttMs = &min
+		s.MeanRttMs = &mean
+		s.MedianRttMs = &median
+		s.P95RttMs = &p95
+		s.MaxRttMs = &max
 	}
 	if b.lastRttMs != nil {
 		v := *b.lastRttMs
@@ -197,6 +210,12 @@ type summaryMsg struct {
 	ProbeLossPct        *float64          `json:"probeLossPct,omitempty"`
 	FailurePct          *float64          `json:"failurePct,omitempty"`
 	UnknownPct          *float64          `json:"unknownPct,omitempty"`
+	MinRttMs            *float64          `json:"minRttMs,omitempty"`
+	MeanRttMs           *float64          `json:"meanRttMs,omitempty"`
+	MedianRttMs         *float64          `json:"medianRttMs,omitempty"`
+	P95RttMs            *float64          `json:"p95RttMs,omitempty"`
+	MaxRttMs            *float64          `json:"maxRttMs,omitempty"`
+	SelectionSkipped    int               `json:"selectionSkipped,omitempty"`
 	LastNote            string            `json:"lastNote,omitempty"`
 	Detail              map[string]string `json:"detail,omitempty"`
 }
