@@ -21,6 +21,7 @@ type jobSpec struct {
 	Port       int
 	Profile    string
 	IP         net.IP
+	state      *dialState
 	Interval   time.Duration
 	Timeout    time.Duration
 	Duration   time.Duration
@@ -110,6 +111,7 @@ func (n *Node) info(w http.ResponseWriter, _ *http.Request) {
 		vis = "public"
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"version":      appVersion,
 		"visibility":   vis,
 		"authRequired": !n.Public(),
 		"profiles": []string{
@@ -185,10 +187,19 @@ func (n *Node) create(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "error", "任务没有启动")
 		return
 	}
+	resolved := make([]map[string]string, 0, len(spec.candidates()))
+	for _, ip := range spec.candidates() {
+		resolved = append(resolved, map[string]string{
+			"address": ip.String(),
+			"family":  familyOf(ip),
+		})
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"jobId":      job.id,
 		"expiresAt":  job.expires.UTC().Format(time.RFC3339),
 		"visibility": map[bool]string{true: "public", false: "private"}[n.Public()],
+		"version":    appVersion,
+		"resolved":   resolved,
 	})
 }
 
@@ -246,7 +257,7 @@ func (n *Node) prepare(ctx context.Context, req createReq) (jobSpec, error) {
 			}
 		}
 	}
-	ip, err := targetOK(ctx, n.Resolver, req.Target, n.AllowPrivate, n.ExtraNets)
+	ips, err := resolveTargets(ctx, n.Resolver, req.Target, n.AllowPrivate, n.ExtraNets)
 	if err != nil {
 		var dnsErr *net.DNSError
 		if errors.As(err, &dnsErr) {
@@ -258,7 +269,8 @@ func (n *Node) prepare(ctx context.Context, req createReq) (jobSpec, error) {
 		return jobSpec{}, &apiError{http.StatusBadRequest, "bad_target", "目标地址无效"}
 	}
 	return jobSpec{
-		Host: req.Target, Port: req.Port, Profile: req.Profile, IP: ip,
+		Host: req.Target, Port: req.Port, Profile: req.Profile, IP: ips[0],
+		state:    &dialState{picker: newEndpointPicker(ips)},
 		Interval: interval, Timeout: timeout, Duration: duration, PacketSize: size,
 		Echo: echo, DNSName: req.DNSName, Payload: payload, Expect: expect,
 	}, nil
@@ -334,18 +346,50 @@ func (n *Node) run(ctx context.Context, job *probeJob, spec jobSpec, p prober) {
 		case <-ctx.Done():
 		}
 	}
+	ledger := &selectionLedger{candidates: len(spec.candidates())}
+	datagram := datagramProfile(spec.Profile)
 	for {
 		if err := n.pace.wait(ctx, spec.PacketSize); err != nil {
 			return
 		}
 		started := time.Now()
-		pctx, cancel := context.WithTimeout(ctx, spec.Timeout)
+		budget := spec.Timeout
+		if budget <= 0 {
+			budget = 1500 * time.Millisecond
+		}
+		if !datagram && spec.state != nil && spec.state.picker != nil && !spec.state.picker.locked && len(spec.state.picker.ips) > 1 {
+			budget *= time.Duration(len(spec.state.picker.ips))
+		}
+		if datagram && spec.state != nil {
+			if ip := spec.dialIP(); ip != nil {
+				spec.state.used = append(net.IP(nil), ip...)
+			}
+		}
+		pctx, cancel := context.WithTimeout(ctx, budget)
 		out := p.Probe(pctx)
 		cancel()
 		if ctx.Err() != nil {
 			return
 		}
-		emit(out)
+		out = spec.decorate(out)
+		var commit []Outcome
+		if datagram && spec.state != nil && spec.state.picker != nil {
+			responded := selectionResponded(out.Status)
+			wasMeasuring := ledger.measuring
+			changed := spec.state.picker.record(responded)
+			commit, _ = ledger.take(out, responded)
+			if wasMeasuring && changed {
+				ledger.measuring = false
+			}
+			if len(commit) == 0 {
+				continue
+			}
+		} else {
+			commit = []Outcome{out}
+		}
+		for _, item := range commit {
+			emit(item)
+		}
 		wait := spec.Interval - time.Since(started)
 		if wait < 0 {
 			wait = 0

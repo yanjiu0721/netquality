@@ -2,6 +2,8 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 
 import '../probe/probe_controller.dart';
+import 'chart_selection.dart';
+import 'format.dart';
 
 const rttColor = Color(0xFF1F4E79);
 const rateColor = Color(0xFF9A3412);
@@ -9,20 +11,67 @@ const ink = Color(0xFF1C2430);
 const muted = Color(0xFF5E6872);
 const line = Color(0xFFE4DFD4);
 
-class QualityCharts extends StatelessWidget {
+class QualityCharts extends StatefulWidget {
   const QualityCharts({
     super.key,
     required this.samples,
     required this.rateLabel,
     required this.running,
+    required this.sessionId,
   });
 
   final List<ChartSample> samples;
   final String rateLabel;
   final bool running;
+  final int sessionId;
+
+  @override
+  State<QualityCharts> createState() => _QualityChartsState();
+}
+
+class _QualityChartsState extends State<QualityCharts> {
+  ChartSelection? _pin;
+
+  @override
+  void didUpdateWidget(QualityCharts oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final kept = nextChartSelection(
+      current: _pin,
+      sessionId: widget.sessionId,
+      sampleSecs: [for (final sample in widget.samples) sample.sec],
+    );
+    if (kept?.sec != _pin?.sec || kept?.sessionId != _pin?.sessionId) {
+      _pin = kept;
+    }
+  }
+
+  void _pinAt(double sec) {
+    setState(() {
+      _pin = nextChartSelection(
+        current: _pin,
+        sessionId: widget.sessionId,
+        sampleSecs: [for (final sample in widget.samples) sample.sec],
+        tappedSec: sec,
+      );
+    });
+  }
+
+  ChartSample? get _pinnedSample {
+    final pin = _pin;
+    if (pin == null || pin.sessionId != widget.sessionId) {
+      return null;
+    }
+    for (final sample in widget.samples) {
+      if ((sample.sec - pin.sec).abs() <= chartPinEpsilon) {
+        return sample;
+      }
+    }
+    return null;
+  }
 
   @override
   Widget build(BuildContext context) {
+    final pinned = _pinnedSample;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -34,27 +83,49 @@ class QualityCharts extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 8),
+        Text(
+          pinned == null
+              ? '点曲线上的一点可以钉住该时刻，松手后仍会保留。再点另一点会更换。'
+              : pinnedReadout(pinned, widget.rateLabel),
+          key: const Key('chart-pin'),
+          style: const TextStyle(color: ink, fontSize: 13, height: 1.4),
+        ),
+        const SizedBox(height: 8),
         _ChartCard(
           title: '延迟',
           unit: 'ms',
-          samples: samples,
+          samples: widget.samples,
           read: (sample) => sample.rttMs,
           color: rttColor,
           floor: 1,
-          running: running,
+          running: widget.running,
+          pinnedSec: pinned?.sec,
+          onPin: _pinAt,
         ),
         _ChartCard(
-          title: rateLabel,
+          title: widget.rateLabel,
           unit: '%',
-          samples: samples,
+          samples: widget.samples,
           read: (sample) => sample.ratePct,
           color: rateColor,
           floor: 10,
-          running: running,
+          running: widget.running,
+          pinnedSec: pinned?.sec,
+          onPin: _pinAt,
         ),
       ],
     );
   }
+}
+
+String pinnedReadout(ChartSample sample, String rateLabel) {
+  final latency = sample.rttMs == null
+      ? '这一刻没有延迟'
+      : '延迟 ${formatMs(sample.rttMs)}';
+  final rate = sample.ratePct == null
+      ? '$rateLabel —'
+      : '$rateLabel ${formatPct(sample.ratePct)}';
+  return '已选 ${sample.sec.toStringAsFixed(1)} 秒 · $latency · $rate';
 }
 
 class _Swatch extends StatelessWidget {
@@ -92,6 +163,8 @@ class _ChartCard extends StatelessWidget {
     required this.color,
     required this.floor,
     required this.running,
+    required this.pinnedSec,
+    required this.onPin,
   });
 
   final String title;
@@ -101,6 +174,8 @@ class _ChartCard extends StatelessWidget {
   final Color color;
   final double floor;
   final bool running;
+  final double? pinnedSec;
+  final void Function(double sec) onPin;
 
   @override
   Widget build(BuildContext context) {
@@ -132,9 +207,7 @@ class _ChartCard extends StatelessWidget {
                   ? _lineChart(spots)
                   : Center(
                       child: Text(
-                        running
-                            ? '正在等待第一次完成的探测。未完成的不会画成 100%。'
-                            : '暂无已完成的探测',
+                        running ? '正在等待第一次完成的探测。未完成的不会画成 100%。' : '暂无已完成的探测',
                         style: const TextStyle(color: muted),
                         textAlign: TextAlign.center,
                       ),
@@ -190,7 +263,8 @@ class _ChartCard extends StatelessWidget {
           show: true,
           drawVerticalLine: false,
           horizontalInterval: yInterval,
-          getDrawingHorizontalLine: (_) => const FlLine(color: line, strokeWidth: 1),
+          getDrawingHorizontalLine: (_) =>
+              const FlLine(color: line, strokeWidth: 1),
         ),
         borderData: FlBorderData(
           show: true,
@@ -200,14 +274,19 @@ class _ChartCard extends StatelessWidget {
           ),
         ),
         titlesData: FlTitlesData(
-          topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          topTitles: const AxisTitles(
+            sideTitles: SideTitles(showTitles: false),
+          ),
+          rightTitles: const AxisTitles(
+            sideTitles: SideTitles(showTitles: false),
+          ),
           leftTitles: AxisTitles(
             sideTitles: SideTitles(
               showTitles: true,
               reservedSize: 40,
               interval: yInterval,
-              getTitlesWidget: (value, meta) => _axisLabel(_formatTick(value, maxY)),
+              getTitlesWidget: (value, meta) =>
+                  _axisLabel(_formatTick(value, maxY)),
             ),
           ),
           bottomTitles: AxisTitles(
@@ -220,15 +299,46 @@ class _ChartCard extends StatelessWidget {
             ),
           ),
         ),
-        lineTouchData: const LineTouchData(handleBuiltInTouches: true),
+        extraLinesData: ExtraLinesData(
+          verticalLines: [
+            if (pinnedSec != null)
+              VerticalLine(
+                x: pinnedSec!,
+                color: color.withValues(alpha: 0.85),
+                strokeWidth: 1.5,
+              ),
+          ],
+        ),
+        lineTouchData: LineTouchData(
+          handleBuiltInTouches: false,
+          touchSpotThreshold: 18,
+          touchCallback: (event, response) {
+            if (event is! FlTapUpEvent) {
+              return;
+            }
+            final spots = response?.lineBarSpots;
+            if (spots == null || spots.isEmpty) {
+              return;
+            }
+            onPin(spots.first.x);
+          },
+        ),
         lineBarsData: [
           LineChartBarData(
             spots: spots,
             isCurved: false,
             color: color,
             barWidth: 2,
-            dotData: const FlDotData(show: false),
-            belowBarData: BarAreaData(show: true, color: color.withValues(alpha: 0.10)),
+            dotData: FlDotData(
+              show: pinnedSec != null,
+              checkToShowDot: (spot, _) =>
+                  pinnedSec != null &&
+                  (spot.x - pinnedSec!).abs() <= chartPinEpsilon,
+            ),
+            belowBarData: BarAreaData(
+              show: true,
+              color: color.withValues(alpha: 0.10),
+            ),
           ),
         ],
       ),

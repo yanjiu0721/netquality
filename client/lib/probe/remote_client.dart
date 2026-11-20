@@ -4,6 +4,7 @@ import 'dart:io';
 
 import '../metrics/sample_book.dart';
 import '../models/session_config.dart';
+import '../ui/address_text.dart';
 
 class RemoteProbe {
   HttpClient? _client;
@@ -16,6 +17,7 @@ class RemoteProbe {
     required ProbeBody body,
     required void Function(ProbeSample sample) onSample,
     required bool Function() cancelled,
+    void Function(List<ResolvedAddress> resolved)? onResolved,
   }) async {
     final normalized = normalizeNodeUrl(baseUrl);
     if (normalized == null) {
@@ -52,6 +54,7 @@ class RemoteProbe {
         throw RemoteException('节点返回的任务无效');
       }
       _jobId = parsed['jobId'] as String;
+      onResolved?.call(readResolvedList(parsed));
       if (cancelled()) {
         return;
       }
@@ -86,7 +89,13 @@ class RemoteProbe {
     _jobId = null;
     if (client != null && id != null && base != null) {
       try {
-        await _send(client, 'DELETE', base.resolve('/v1/jobs/$id'), nodeToken, const []);
+        await _send(
+          client,
+          'DELETE',
+          base.resolve('/v1/jobs/$id'),
+          nodeToken,
+          const [],
+        );
       } on Object {
         // The stream ending already asks the node to drop the job.
       }
@@ -101,7 +110,9 @@ class RemoteProbe {
     void Function(ProbeSample sample) onSample,
     bool Function() cancelled,
   ) async {
-    final request = await client.getUrl(_base!.resolve('/v1/jobs/$_jobId/stream'));
+    final request = await client.getUrl(
+      _base!.resolve('/v1/jobs/$_jobId/stream'),
+    );
     request.followRedirects = false;
     _auth(request, nodeToken);
     final response = await request.close().timeout(const Duration(seconds: 20));
@@ -194,7 +205,9 @@ Future<NodeInfo> fetchNodeInfo(String baseUrl) async {
   }
   final client = HttpClient();
   try {
-    final request = await client.getUrl(Uri.parse(normalized).resolve('/v1/info'));
+    final request = await client.getUrl(
+      Uri.parse(normalized).resolve('/v1/info'),
+    );
     request.followRedirects = false;
     final response = await request.close().timeout(const Duration(seconds: 8));
     final body = await response.transform(utf8.decoder).join();
@@ -206,7 +219,9 @@ Future<NodeInfo> fetchNodeInfo(String baseUrl) async {
       throw RemoteException('节点信息无效');
     }
     return NodeInfo(
-      visibility: json['visibility'] is String ? json['visibility'] as String : '',
+      visibility: json['visibility'] is String
+          ? json['visibility'] as String
+          : '',
       authRequired: json['authRequired'] == true,
     );
   } on RemoteException {

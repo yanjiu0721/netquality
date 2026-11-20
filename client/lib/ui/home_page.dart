@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../models/node_edit.dart';
+import '../models/port_field.dart';
 import '../models/probe_profile.dart';
 import '../models/session_config.dart';
 import '../probe/endpoint_picker.dart';
@@ -9,7 +11,11 @@ import '../probe/probe_controller.dart';
 import '../probe/remote_client.dart';
 import '../storage/app_store.dart';
 import '../storage/token_vault.dart';
+import 'address_text.dart';
 import 'format.dart';
+import 'history_page.dart';
+import 'metric_guide_page.dart';
+import 'metrics_panel.dart';
 import 'quality_charts.dart';
 
 class HomePage extends StatefulWidget {
@@ -134,7 +140,11 @@ class _HomePageState extends State<HomePage> {
     final nodeToken = config.node == null
         ? ''
         : (await _vault.read(nodeTokenKey(config.node!.id)) ?? '');
-    await _controller.start(config, nodeToken: nodeToken, echoToken: _echo.text);
+    await _controller.start(
+      config,
+      nodeToken: nodeToken,
+      echoToken: _echo.text,
+    );
   }
 
   void _changeProfile(String? id) {
@@ -144,9 +154,11 @@ class _HomePageState extends State<HomePage> {
     final previous = ProbeProfile.byId(_profileId);
     final next = ProbeProfile.byId(id);
     setState(() {
-      if (_port.text.trim() == '${previous.port}') {
-        _port.text = '${next.port}';
-      }
+      _port.text = portAfterProfileChange(
+        current: _port.text,
+        previousDefault: previous.port,
+        nextDefault: next.port,
+      );
       _profileId = id;
     });
   }
@@ -160,6 +172,22 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('网络质量探测'),
         backgroundColor: const Color(0xFFF3F1EC),
+        actions: [
+          PopupMenuButton<String>(
+            tooltip: '说明',
+            onSelected: (value) {
+              final page = value == 'history'
+                  ? const HistoryPage()
+                  : const MetricGuidePage();
+              Navigator.of(context)
+                  .push(MaterialPageRoute<void>(builder: (_) => page));
+            },
+            itemBuilder: (context) => const [
+              PopupMenuItem(value: 'metrics', child: Text('指标说明')),
+              PopupMenuItem(value: 'history', child: Text('更新历史')),
+            ],
+          ),
+        ],
       ),
       body: SafeArea(
         child: Align(
@@ -167,12 +195,14 @@ class _HomePageState extends State<HomePage> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 880),
             child: ListView(
-              padding: EdgeInsets.fromLTRB(wide ? 24 : 12, 8, wide ? 24 : 12, 28),
+              padding: EdgeInsets.fromLTRB(
+                wide ? 24 : 12,
+                8,
+                wide ? 24 : 12,
+                28,
+              ),
               children: [
-                _card(
-                  title: '探测来源',
-                  child: _source(view, wide),
-                ),
+                _card(title: '探测来源', child: _source(view, wide)),
                 _card(
                   title: '目标',
                   child: Column(
@@ -181,7 +211,13 @@ class _HomePageState extends State<HomePage> {
                       _pair(
                         wide,
                         _field(_host, '目标地址', '域名或 IP'),
-                        _field(_port, '端口', '1–65535'),
+                        _field(
+                          _port,
+                          '端口',
+                          portHint(profile),
+                          fieldKey: const Key('port-field'),
+                          helper: portHelperText,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String>(
@@ -190,12 +226,18 @@ class _HomePageState extends State<HomePage> {
                         decoration: const InputDecoration(labelText: '探测类型'),
                         items: [
                           for (final item in ProbeProfile.all)
-                            DropdownMenuItem(value: item.id, child: Text(item.label)),
+                            DropdownMenuItem(
+                              value: item.id,
+                              child: Text(item.label),
+                            ),
                         ],
                         onChanged: view.running ? null : _changeProfile,
                       ),
                       const SizedBox(height: 8),
-                      Text(profile.blurb, style: const TextStyle(color: muted, fontSize: 13)),
+                      Text(
+                        profile.blurb,
+                        style: const TextStyle(color: muted, fontSize: 13),
+                      ),
                     ],
                   ),
                 ),
@@ -206,7 +248,11 @@ class _HomePageState extends State<HomePage> {
                     children: [
                       _pair(
                         wide,
-                        _field(_interval, '间隔（毫秒）', _remote ? '至少 200' : '至少 100'),
+                        _field(
+                          _interval,
+                          '间隔（毫秒）',
+                          _remote ? '至少 200' : '至少 100',
+                        ),
                         _field(_timeout, '超时（毫秒）', '100–15000'),
                       ),
                       if (profile.needsPacketSize) ...[
@@ -252,11 +298,44 @@ class _HomePageState extends State<HomePage> {
                   _banner(view.banner!),
                 ],
                 const SizedBox(height: 12),
-                _card(title: '结果', child: _result(view)),
+                _card(
+                  title: '结果',
+                  child: _result(
+                    view,
+                    view.profileId.isEmpty ? profile.id : view.profileId,
+                  ),
+                ),
+                if (view.report != null)
+                  SessionSummaryCard(
+                    report: view.report!,
+                    profileId: view.report!.profileId,
+                  ),
                 QualityCharts(
                   samples: view.samples,
                   rateLabel: view.rateLabel,
                   running: view.running,
+                  sessionId: view.sessionId,
+                ),
+                Wrap(
+                  spacing: 8,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const MetricGuidePage(),
+                        ),
+                      ),
+                      child: const Text('指标说明'),
+                    ),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const HistoryPage(),
+                        ),
+                      ),
+                      child: const Text('更新历史'),
+                    ),
+                  ],
                 ),
                 const Text(
                   '延迟用发包一侧的单调时钟计算。远程探测时，这个时间在节点上量好再传回来，不包含手机到节点的控制通道耗时。TCP 超时不是物理丢包。没有协议应答的 UDP 记为无应答/未知，不会在探测完成前显示 100%。',
@@ -271,17 +350,25 @@ class _HomePageState extends State<HomePage> {
   }
 
   Widget _source(ProbeView view, bool wide) {
-    final selected = _nodes.cast<RemoteNode?>().followedBy(const [null]).firstWhere(
-      (node) => node?.id == _nodeId,
-      orElse: () => null,
-    );
+    final selected = _nodes
+        .cast<RemoteNode?>()
+        .followedBy(const [null])
+        .firstWhere((node) => node?.id == _nodeId, orElse: () => null);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SegmentedButton<bool>(
           segments: const [
-            ButtonSegment(value: false, label: Text('本机'), icon: Icon(Icons.phone_android)),
-            ButtonSegment(value: true, label: Text('远程节点'), icon: Icon(Icons.dns_outlined)),
+            ButtonSegment(
+              value: false,
+              label: Text('本机'),
+              icon: Icon(Icons.phone_android),
+            ),
+            ButtonSegment(
+              value: true,
+              label: Text('远程节点'),
+              icon: Icon(Icons.dns_outlined),
+            ),
           ],
           selected: {_remote},
           onSelectionChanged: view.running
@@ -290,9 +377,7 @@ class _HomePageState extends State<HomePage> {
         ),
         const SizedBox(height: 8),
         Text(
-          _remote
-              ? '由选中的节点向目标发包，这台设备只负责控制和显示。'
-              : '由这台设备直接向目标发包。可以探测本机上的反射器。',
+          _remote ? '由选中的节点向目标发包，这台设备只负责控制和显示。' : '由这台设备直接向目标发包。可以探测本机上的反射器。',
           style: const TextStyle(color: muted, fontSize: 13),
         ),
         if (_remote) ...[
@@ -338,13 +423,18 @@ class _HomePageState extends State<HomePage> {
     return '${node.name} · $vis';
   }
 
-  Widget _result(ProbeView view) {
+  Widget _result(ProbeView view, String profileId) {
     final summary = view.summary;
-    final rate = view.rateLabel == '探测无应答'
-        ? summary.probeLossPct
-        : view.rateLabel == '失败率'
-        ? summary.failurePct
-        : summary.unknownPct;
+    final address = describeAddress(
+      resolved: view.resolved,
+      usedAddress: view.usedAddress,
+      usedFamily: view.usedFamily,
+      tryingAddress: view.tryingAddress,
+      tryingFamily: view.tryingFamily,
+      fallbackText: view.fallbackText,
+      addressUnreported: view.addressUnreported,
+      usedIsFake: view.usedIsFake,
+    );
     final motd = view.detail['motd'];
     final version = view.detail['version'];
     final players = view.detail['players'];
@@ -357,13 +447,42 @@ class _HomePageState extends State<HomePage> {
           children: [
             _chip(view.phase),
             _chip('来源 ${view.sourceLabel}'),
-            if (view.targetAddress != null) _chip('发往 ${view.targetAddress}'),
-            _chip('延迟 ${formatMs(summary.rttMs)}'),
-            _chip('抖动 ${formatMs(summary.jitterMs)}'),
-            _chip('${view.rateLabel} ${formatPct(rate)}'),
+            if (view.targetHost.isNotEmpty) _chip(view.targetHost),
           ],
         ),
-        if (view.targetIsFake) ...[
+        const SizedBox(height: 8),
+        MetricsPanel(
+          summary: summary,
+          profileId: profileId,
+          elapsed: view.elapsed,
+        ),
+        if (address.trying != null) ...[
+          const SizedBox(height: 8),
+          Text(address.trying!, style: const TextStyle(color: ink)),
+        ],
+        if (address.used != null) ...[
+          const SizedBox(height: 8),
+          Text(address.used!, style: const TextStyle(color: ink)),
+        ],
+        if (address.resolved != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            address.resolved!,
+            style: const TextStyle(color: muted, fontSize: 13),
+          ),
+        ],
+        if (address.unreported != null) ...[
+          const SizedBox(height: 8),
+          Text(
+            address.unreported!,
+            style: const TextStyle(color: Color(0xFF9A3412)),
+          ),
+        ],
+        if (address.fallback != null) ...[
+          const SizedBox(height: 8),
+          Text(address.fallback!, style: const TextStyle(color: ink)),
+        ],
+        if (address.fake) ...[
           const SizedBox(height: 8),
           const Text(
             clashFakeIpNote,
@@ -386,7 +505,10 @@ class _HomePageState extends State<HomePage> {
           ),
         ],
         const SizedBox(height: 8),
-        Text(summaryLine(summary), style: const TextStyle(color: muted, fontSize: 13)),
+        Text(
+          summaryLine(summary),
+          style: const TextStyle(color: muted, fontSize: 13),
+        ),
       ],
     );
   }
@@ -434,6 +556,7 @@ class _NodeDialogState extends State<_NodeDialog> {
   final _name = TextEditingController();
   final _url = TextEditingController();
   final _token = TextEditingController();
+  String? _editingId;
   String? _hint;
 
   @override
@@ -450,6 +573,41 @@ class _NodeDialogState extends State<_NodeDialog> {
       setState(() => _hint = '请填写名称，以及不带口令的 http 或 https 地址');
       return;
     }
+    final editing = _editingId;
+    if (editing != null) {
+      RemoteNode? previous;
+      for (final node in _nodes) {
+        if (node.id == editing) {
+          previous = node;
+        }
+      }
+      if (previous == null) {
+        return;
+      }
+      final next = applyNodeEdit(
+        previous,
+        name: _name.text.trim(),
+        baseUrl: url,
+      );
+      final replaced = await saveEditedNodeToken(
+        widget.vault,
+        editing,
+        _token.text,
+      );
+      setState(() {
+        _nodes = [
+          for (final node in _nodes)
+            if (node.id == editing) next else node,
+        ];
+        _editingId = null;
+        _hint = replaced ? '已更新，口令已替换，仍只留在本机。' : '已更新。口令留空，原来的口令未改。';
+        _name.clear();
+        _url.clear();
+        _token.clear();
+      });
+      widget.onChanged(_nodes, editing);
+      return;
+    }
     final id = DateTime.now().microsecondsSinceEpoch.toString();
     final node = RemoteNode(id: id, name: _name.text.trim(), baseUrl: url);
     await widget.vault.write(nodeTokenKey(id), _token.text.trim());
@@ -461,6 +619,26 @@ class _NodeDialogState extends State<_NodeDialog> {
       _token.clear();
     });
     widget.onChanged(_nodes, id);
+  }
+
+  void _beginEdit(RemoteNode node) {
+    setState(() {
+      _editingId = node.id;
+      _name.text = node.name;
+      _url.text = node.baseUrl;
+      _token.clear();
+      _hint = '正在修改「${node.name}」。口令留空则保留已保存的口令，不会显示原口令。';
+    });
+  }
+
+  void _cancelEdit() {
+    setState(() {
+      _editingId = null;
+      _name.clear();
+      _url.clear();
+      _token.clear();
+      _hint = null;
+    });
   }
 
   Future<void> _check(RemoteNode node) async {
@@ -487,7 +665,10 @@ class _NodeDialogState extends State<_NodeDialog> {
 
   Future<void> _delete(RemoteNode node) async {
     await widget.vault.delete(nodeTokenKey(node.id));
-    final next = [for (final item in _nodes) if (item.id != node.id) item];
+    final next = [
+      for (final item in _nodes)
+        if (item.id != node.id) item,
+    ];
     setState(() => _nodes = next);
     widget.onChanged(next, null);
   }
@@ -510,22 +691,41 @@ class _NodeDialogState extends State<_NodeDialog> {
               for (final node in _nodes)
                 ListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: Text(_nodes.isEmpty ? '' : '${node.name} · ${visibilityLabel(node.visibility)}'),
-                  subtitle: Text(node.baseUrl, maxLines: 1, overflow: TextOverflow.ellipsis),
+                  title: Text(
+                    '${node.name} · ${visibilityLabel(node.visibility)}',
+                  ),
+                  subtitle: Text(
+                    node.baseUrl,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   trailing: Wrap(
                     spacing: 4,
                     children: [
-                      TextButton(onPressed: () => _check(node), child: const Text('检查')),
-                      TextButton(onPressed: () => _delete(node), child: const Text('删除')),
+                      TextButton(
+                        key: Key('edit-node-${node.id}'),
+                        onPressed: () => _beginEdit(node),
+                        child: const Text('编辑'),
+                      ),
+                      TextButton(
+                        onPressed: () => _check(node),
+                        child: const Text('检查'),
+                      ),
+                      TextButton(
+                        onPressed: () => _delete(node),
+                        child: const Text('删除'),
+                      ),
                     ],
                   ),
                 ),
               TextField(
+                key: const Key('node-name'),
                 controller: _name,
                 decoration: const InputDecoration(labelText: '名称'),
               ),
               const SizedBox(height: 8),
               TextField(
+                key: const Key('node-url'),
                 controller: _url,
                 decoration: const InputDecoration(
                   labelText: '节点地址',
@@ -534,10 +734,14 @@ class _NodeDialogState extends State<_NodeDialog> {
               ),
               const SizedBox(height: 8),
               TextField(
+                key: const Key('node-token'),
                 controller: _token,
                 obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: '节点口令（公开节点留空）',
+                decoration: InputDecoration(
+                  labelText: _editingId == null ? '节点口令（公开节点留空）' : '新口令（留空则保留）',
+                  helperText: _editingId == null
+                      ? null
+                      : '留空则保留已保存的口令，不会显示原口令。',
                 ),
               ),
               if (_hint != null) ...[
@@ -549,8 +753,17 @@ class _NodeDialogState extends State<_NodeDialog> {
         ),
       ),
       actions: [
-        TextButton(onPressed: _save, child: const Text('添加节点')),
-        TextButton(onPressed: () => Navigator.pop(context), child: const Text('完成')),
+        if (_editingId != null)
+          TextButton(onPressed: _cancelEdit, child: const Text('取消编辑')),
+        TextButton(
+          key: const Key('node-save'),
+          onPressed: _save,
+          child: Text(_editingId == null ? '添加节点' : '保存修改'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('完成'),
+        ),
       ],
     );
   }
@@ -568,7 +781,10 @@ Widget _card({required String title, required Widget child}) {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(title, style: const TextStyle(fontWeight: FontWeight.w700, color: ink)),
+          Text(
+            title,
+            style: const TextStyle(fontWeight: FontWeight.w700, color: ink),
+          ),
           const SizedBox(height: 10),
           child,
         ],
@@ -582,11 +798,18 @@ Widget _field(
   String label,
   String hint, {
   bool secret = false,
+  Key? fieldKey,
+  String? helper,
 }) {
   return TextField(
+    key: fieldKey,
     controller: controller,
     obscureText: secret,
-    decoration: InputDecoration(labelText: label, hintText: hint),
+    decoration: InputDecoration(
+      labelText: label,
+      hintText: hint,
+      helperText: helper,
+    ),
   );
 }
 
