@@ -15,7 +15,7 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "dev.netquality/platform")
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "abi" -> result.success(Build.SUPPORTED_ABIS.firstOrNull ?: "")
+                    "abi" -> result.success(Build.SUPPORTED_ABIS.firstOrNull() ?: "")
                     "installApk" -> {
                         val path = call.argument<String>("path")
                         if (path.isNullOrEmpty()) {
