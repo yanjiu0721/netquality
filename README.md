@@ -104,7 +104,7 @@ cd server && go test -race ./...
 cd client && flutter analyze && flutter test
 ```
 
-Android 安装包是按 CPU 分开的 release 包，使用调试证书，只适合测试安装，不是应用商店签名。当前版本名 `1.1.3`，构建号 `6`。应用标识没有改，新的安装包会覆盖原来的「网络质量探测」，不用先卸载。
+Android 安装包是按 CPU 分开的 release 包，使用调试证书，只适合测试安装，不是应用商店签名。当前版本名 `1.1.3`，构建号 `6`。应用标识没有改。1.1.3 以及以后的版本必须用仓库里的 [client/android/keystore/debug.keystore](client/android/keystore/debug.keystore) 签名，这样后一版才能覆盖安装。1.1.2 的证书不同，升到 1.1.3 要先卸载。
 
 从 1.1.3 起，客户端启动后会检查更新，设置里可以关掉。先问 GitHub Releases，连不上再问 `https://git.yanjiu.ltd/YanJiu/netquality/releases`。1.1.2 没有这个功能，所以 1.1.2 升到 1.1.3 仍然要自己安装。Windows 和 Linux 会把新文件写回当前安装目录。Android 会弹出系统安装确认，这一步不能跳过。没有真正的新版本时，可以用环境变量 `NQ_UPDATE_GITHUB_API` 和 `NQ_UPDATE_GITEA_API` 指向一份同样格式的测试响应。
 
