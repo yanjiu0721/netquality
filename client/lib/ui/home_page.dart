@@ -1,22 +1,29 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../center/catalog.dart';
+import '../center/center_client.dart';
 import '../models/node_edit.dart';
 import '../models/port_field.dart';
 import '../models/probe_profile.dart';
 import '../models/session_config.dart';
+import '../models/target_history.dart';
 import '../probe/endpoint_picker.dart';
 import '../probe/probe_controller.dart';
 import '../probe/remote_client.dart';
 import '../storage/app_store.dart';
 import '../storage/token_vault.dart';
+import '../update/apply_update.dart';
 import 'address_text.dart';
+import 'center_dialog.dart';
 import 'format.dart';
 import 'history_page.dart';
 import 'metric_guide_page.dart';
 import 'metrics_panel.dart';
 import 'quality_charts.dart';
+import 'settings_page.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -39,22 +46,40 @@ class _HomePageState extends State<HomePage> {
   final _dns = TextEditingController(text: 'example.com');
   final _payload = TextEditingController();
   final _expect = TextEditingController();
+  final _httpResolve = TextEditingController();
+  final _httpBody = TextEditingController();
+  final _httpReferer = TextEditingController();
+  final _httpUserAgent = TextEditingController();
+  final _httpCookies = TextEditingController();
+  final _httpRedirects = TextEditingController(text: '5');
+  var _httpVersion = 'auto';
+  var _httpMethod = 'GET';
+  var _allow4 = true;
+  var _allow6 = true;
+  var _autoUpdate = true;
+  var _centers = <CenterLink>[];
+  var _history = TargetHistory.empty;
+  var _centerHint = '';
   var _remote = false;
   var _profileId = ProbeProfile.nqTcp.id;
   var _nodeId = '';
   var _nodes = <RemoteNode>[];
   var _ready = false;
+  var _idSeq = 0;
+  var _formEpoch = 0;
 
   @override
   void initState() {
     super.initState();
     _controller.addListener(_rebuild);
+    _host.addListener(_onHostChanged);
     _load();
   }
 
   Future<void> _load() async {
     _vault = await openTokenVault();
     final loaded = await _store.load();
+    final history = await _store.loadHistory();
     final echo = await _vault.read(echoTokenKey);
     if (!mounted) {
       return;
@@ -74,11 +99,41 @@ class _HomePageState extends State<HomePage> {
       _dns.text = config.dnsName;
       _payload.text = config.payloadHex;
       _expect.text = config.expectHex;
+      _allow4 = config.allowIPv4;
+      _allow6 = config.allowIPv6;
+      _autoUpdate = config.autoUpdate;
+      _httpVersion = config.httpVersion;
+      _httpMethod = config.httpMethod;
+      _httpResolve.text = config.httpResolve;
+      _httpBody.text = config.httpBody;
+      _httpReferer.text = config.httpReferer;
+      _httpUserAgent.text = config.httpUserAgent;
+      _httpCookies.text = config.httpCookies;
+      _httpRedirects.text = '${config.httpMaxRedirects}';
+      _centers = config.centers;
+      _history = history;
       _echo.text = (echo == null || echo.isEmpty) ? loaded.legacyEcho : echo;
       _ready = true;
     });
     if (loaded.legacyEcho.isNotEmpty && (echo == null || echo.isEmpty)) {
       await _vault.write(echoTokenKey, loaded.legacyEcho);
+    }
+    if (config.autoUpdate && Platform.environment['FLUTTER_TEST'] != 'true') {
+      unawaited(_launchUpdate());
+    }
+  }
+
+  void _onHostChanged() {
+    if (_profileId != 'http') {
+      return;
+    }
+    final current = int.tryParse(_port.text.trim());
+    if (_port.text.trim().isNotEmpty && current != 80 && current != 443) {
+      return;
+    }
+    final next = '${httpDefaultPort(_host.text)}';
+    if (_port.text != next) {
+      _port.text = next;
     }
   }
 
@@ -93,6 +148,7 @@ class _HomePageState extends State<HomePage> {
     unawaited(_controller.stop());
     unawaited(_persist());
     _controller.removeListener(_rebuild);
+    _host.removeListener(_onHostChanged);
     _controller.dispose();
     for (final field in [
       _host,
@@ -105,6 +161,12 @@ class _HomePageState extends State<HomePage> {
       _dns,
       _payload,
       _expect,
+      _httpResolve,
+      _httpBody,
+      _httpReferer,
+      _httpUserAgent,
+      _httpCookies,
+      _httpRedirects,
     ]) {
       field.dispose();
     }
@@ -126,6 +188,18 @@ class _HomePageState extends State<HomePage> {
       dnsName: _dns.text.trim(),
       payloadHex: _payload.text.trim(),
       expectHex: _expect.text.trim(),
+      allowIPv4: _allow4,
+      allowIPv6: _allow6,
+      autoUpdate: _autoUpdate,
+      httpVersion: _httpVersion,
+      httpResolve: _httpResolve.text.trim(),
+      httpMethod: _httpMethod,
+      httpBody: _httpBody.text,
+      httpReferer: _httpReferer.text.trim(),
+      httpUserAgent: _httpUserAgent.text.trim(),
+      httpCookies: _httpCookies.text,
+      httpMaxRedirects: int.tryParse(_httpRedirects.text.trim()) ?? 5,
+      centers: _centers,
     );
   }
 
@@ -137,9 +211,28 @@ class _HomePageState extends State<HomePage> {
   Future<void> _start() async {
     await _persist();
     final config = _config();
-    final nodeToken = config.node == null
+    if (config.validate() == null) {
+      _history = _history.add(
+        TargetEntry(
+          host: config.host,
+          port: config.port,
+          profileId: config.profileId,
+          httpUrl: config.profileId == 'http' ? config.host : '',
+          method: config.profileId == 'http' ? config.httpMethod : '',
+          savedAtMs: DateTime.now().millisecondsSinceEpoch,
+        ),
+      );
+      await _store.saveHistory(_history);
+    }
+    final node = config.node;
+    final nodeToken = node == null
         ? ''
-        : (await _vault.read(nodeTokenKey(config.node!.id)) ?? '');
+        : (await _vault.read(
+                node.confidential
+                    ? centerTokenKey(node.centerLinkId)
+                    : nodeTokenKey(node.id),
+              ) ??
+              '');
     await _controller.start(
       config,
       nodeToken: nodeToken,
@@ -153,11 +246,17 @@ class _HomePageState extends State<HomePage> {
     }
     final previous = ProbeProfile.byId(_profileId);
     final next = ProbeProfile.byId(id);
+    final currentPort = int.tryParse(_port.text.trim());
+    var previousDefault = previous.port;
+    if (_profileId == 'http' && (currentPort == 80 || currentPort == 443)) {
+      previousDefault = currentPort!;
+    }
+    final nextDefault = id == 'http' ? httpDefaultPort(_host.text) : next.port;
     setState(() {
       _port.text = portAfterProfileChange(
         current: _port.text,
-        previousDefault: previous.port,
-        nextDefault: next.port,
+        previousDefault: previousDefault,
+        nextDefault: nextDefault,
       );
       _profileId = id;
     });
@@ -176,6 +275,10 @@ class _HomePageState extends State<HomePage> {
           PopupMenuButton<String>(
             tooltip: '说明',
             onSelected: (value) {
+              if (value == 'settings') {
+                _openSettings();
+                return;
+              }
               final page = value == 'history'
                   ? const HistoryPage()
                   : const MetricGuidePage();
@@ -183,6 +286,7 @@ class _HomePageState extends State<HomePage> {
                   .push(MaterialPageRoute<void>(builder: (_) => page));
             },
             itemBuilder: (context) => const [
+              PopupMenuItem(value: 'settings', child: Text('设置')),
               PopupMenuItem(value: 'metrics', child: Text('指标说明')),
               PopupMenuItem(value: 'history', child: Text('更新历史')),
             ],
@@ -210,7 +314,20 @@ class _HomePageState extends State<HomePage> {
                     children: [
                       _pair(
                         wide,
-                        _field(_host, '目标地址', '域名或 IP'),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: _field(_host, '目标地址', '域名、IP，或 http(s) 地址'),
+                            ),
+                            IconButton(
+                              key: const Key('target-history'),
+                              tooltip: '最近目标',
+                              onPressed: view.running ? null : _showHistory,
+                              icon: const Icon(Icons.history),
+                            ),
+                          ],
+                        ),
                         _field(
                           _port,
                           '端口',
@@ -221,7 +338,9 @@ class _HomePageState extends State<HomePage> {
                       ),
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String>(
-                        key: const Key('profile'),
+                        key: _formEpoch == 0
+                            ? const Key('profile')
+                            : Key('profile-$_formEpoch'),
                         initialValue: _profileId,
                         decoration: const InputDecoration(labelText: '探测类型'),
                         items: [
@@ -238,6 +357,7 @@ class _HomePageState extends State<HomePage> {
                         profile.blurb,
                         style: const TextStyle(color: muted, fontSize: 13),
                       ),
+                      if (profile.id == 'http') ..._httpFields(view.running),
                     ],
                   ),
                 ),
@@ -400,11 +520,30 @@ class _HomePageState extends State<HomePage> {
                   ? null
                   : (value) => setState(() => _nodeId = value ?? ''),
             ),
-            OutlinedButton(
-              onPressed: view.running ? null : _manageNodes,
-              child: const Text('管理节点'),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                OutlinedButton(
+                  onPressed: view.running ? null : _manageNodes,
+                  child: const Text('管理节点'),
+                ),
+                OutlinedButton(
+                  onPressed: view.running ? null : _addCenter,
+                  child: const Text('一键添加服务器'),
+                ),
+              ],
             ),
           ),
+          if (_centers.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            for (final link in _centers) _centerTile(link, view.running),
+          ],
+          if (_centerHint.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 8),
+              child: Text(_centerHint, style: const TextStyle(fontSize: 13)),
+            ),
           if (selected != null && nodeUrlLooksPublic(selected.baseUrl))
             const Padding(
               padding: EdgeInsets.only(top: 8),
@@ -414,6 +553,323 @@ class _HomePageState extends State<HomePage> {
               ),
             ),
         ],
+      ],
+    );
+  }
+
+  List<Widget> _httpFields(bool running) {
+    return [
+      const SizedBox(height: 12),
+      DropdownButtonFormField<String>(
+        key: ValueKey('http-version-$_httpVersion-$_formEpoch'),
+        initialValue: _httpVersion,
+        decoration: const InputDecoration(labelText: '协议'),
+        items: const [
+          DropdownMenuItem(value: 'auto', child: Text('自动（HTTP/2，可降到 1.1）')),
+          DropdownMenuItem(value: '1.1', child: Text('仅 HTTP/1.1')),
+          DropdownMenuItem(value: '2', child: Text('仅 HTTP/2')),
+          DropdownMenuItem(value: '3', child: Text('仅 HTTP/3')),
+        ],
+        onChanged: running
+            ? null
+            : (value) => setState(() => _httpVersion = value ?? 'auto'),
+      ),
+      const SizedBox(height: 8),
+      _field(
+        _httpResolve,
+        '指定解析',
+        '可选。Host 和 SNI 仍用上面的地址，连接改走这里的 IP 或主机名',
+      ),
+      const SizedBox(height: 12),
+      DropdownButtonFormField<String>(
+        key: ValueKey('http-method-$_httpMethod-$_formEpoch'),
+        initialValue: _httpMethod,
+        decoration: const InputDecoration(labelText: '方法'),
+        items: const [
+          DropdownMenuItem(value: 'GET', child: Text('GET')),
+          DropdownMenuItem(value: 'POST', child: Text('POST')),
+        ],
+        onChanged: running
+            ? null
+            : (value) => setState(() => _httpMethod = value ?? 'GET'),
+      ),
+      if (_httpMethod == 'POST') ...[
+        const SizedBox(height: 8),
+        _field(_httpBody, '请求体', '可选'),
+      ],
+      const SizedBox(height: 8),
+      _field(_httpReferer, 'Referer', '可选'),
+      const SizedBox(height: 8),
+      _field(_httpUserAgent, 'User-Agent', '可选'),
+      const SizedBox(height: 8),
+      _field(_httpCookies, 'Cookies', '可选', secret: true),
+      const SizedBox(height: 8),
+      _field(_httpRedirects, '最大跳转次数', '默认 5，0 到 20'),
+    ];
+  }
+
+  String _httpSummary(Map<String, String> detail) {
+    final parts = [
+      if (detail['httpVersion'] != null) 'HTTP/${detail['httpVersion']}',
+      if (detail['statusCode'] != null) '状态 ${detail['statusCode']}',
+      if (detail['finalUrl'] != null) detail['finalUrl']!,
+    ];
+    final times = [
+      if (detail['dnsMs'] != null) 'DNS ${detail['dnsMs']} ms',
+      if (detail['connectMs'] != null) '连接 ${detail['connectMs']} ms',
+      if (detail['tlsMs'] != null) 'TLS ${detail['tlsMs']} ms',
+      if (detail['ttfbMs'] != null) 'TTFB ${detail['ttfbMs']} ms',
+      if (detail['totalMs'] != null) '总计 ${detail['totalMs']} ms',
+    ];
+    final chain = detail['redirects'];
+    return [
+      parts.join(' · '),
+      if (times.isNotEmpty) times.join('，'),
+      if (chain != null && chain.isNotEmpty) '跳转 $chain',
+    ].where((part) => part.isNotEmpty).join('\n');
+  }
+
+  Future<void> _openSettings() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SettingsPage(
+          allowIPv4: _allow4,
+          allowIPv6: _allow6,
+          autoUpdate: _autoUpdate,
+          onAllowIPv4: (value) {
+            setState(() => _allow4 = value);
+            unawaited(_persist());
+          },
+          onAllowIPv6: (value) {
+            setState(() => _allow6 = value);
+            unawaited(_persist());
+          },
+          onAutoUpdate: (value) {
+            setState(() => _autoUpdate = value);
+            unawaited(_persist());
+          },
+        ),
+      ),
+    );
+  }
+
+  Future<void> _launchUpdate() async {
+    final result = await checkForUpdate();
+    final offer = result.offer;
+    if (offer == null || !mounted || !_autoUpdate) {
+      return;
+    }
+    await installOffer(offer);
+  }
+
+  Future<void> _showHistory() async {
+    if (_history.entries.isEmpty) {
+      setState(() => _centerHint = '');
+      if (!mounted) {
+        return;
+      }
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('最近目标'),
+          content: const Text('还没有保存过目标。点「开始探测」之后，这里会记下地址、端口和类型。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('关闭'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('最近目标'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              for (var i = 0; i < _history.entries.length; i++)
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(_history.entries[i].label),
+                  onTap: () {
+                    _applyHistory(_history.entries[i]);
+                    Navigator.pop(context);
+                  },
+                  trailing: IconButton(
+                    tooltip: '删除',
+                    onPressed: () async {
+                      _history = _history.removeAt(i);
+                      await _store.saveHistory(_history);
+                      if (context.mounted) {
+                        Navigator.pop(context);
+                      }
+                      await _showHistory();
+                    },
+                    icon: const Icon(Icons.close),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              _history = _history.clear();
+              await _store.saveHistory(_history);
+              if (context.mounted) {
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('全部清除'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _applyHistory(TargetEntry entry) {
+    setState(() {
+      _formEpoch += 1;
+      _profileId = entry.profileId;
+      _host.text = entry.httpUrl.isNotEmpty ? entry.httpUrl : entry.host;
+      _port.text = '${entry.port}';
+      if (entry.profileId == 'http' && entry.method.isNotEmpty) {
+        _httpMethod = entry.method;
+      }
+    });
+  }
+
+  String _newId() {
+    _idSeq += 1;
+    return '${DateTime.now().microsecondsSinceEpoch}-$_idSeq';
+  }
+
+  Future<void> _addCenter() async {
+    final added = await showCenterAddDialog(context);
+    if (added == null) {
+      return;
+    }
+    var link = added.link;
+    for (final existing in _centers) {
+      if (existing.url == added.link.url && existing.account == added.link.account) {
+        link = existing;
+        break;
+      }
+    }
+    await _vault.write(centerTokenKey(link.id), added.token);
+    await _applyCatalog(link, added.catalog, '已添加 ${added.catalog.servers.length} 台服务器');
+  }
+
+  Future<void> _refreshCenter(CenterLink link) async {
+    try {
+      final token = await _vault.read(centerTokenKey(link.id)) ?? '';
+      final catalog = await fetchCatalog(baseUrl: link.url, token: token);
+      await _applyCatalog(link, catalog, '已按中心重新同步');
+    } on CenterClientException catch (error) {
+      setState(() => _centerHint = error.message);
+    }
+  }
+
+  Future<void> _removeCenter(CenterLink link) async {
+    final gone = [
+      for (final node in _nodes)
+        if (node.centerLinkId == link.id) node.id,
+    ];
+    for (final id in gone) {
+      await _vault.delete(nodeTokenKey(id));
+    }
+    await _vault.delete(centerTokenKey(link.id));
+    setState(() {
+      _centers = [for (final item in _centers) if (item.id != link.id) item];
+      _nodes = [
+        for (final node in _nodes)
+          if (node.centerLinkId != link.id) node,
+      ];
+      if (!_nodes.any((node) => node.id == _nodeId)) {
+        _nodeId = '';
+      }
+      _centerHint = '已移除这个中心口令及其服务器';
+    });
+    await _persist();
+  }
+
+  Future<void> _applyCatalog(CenterLink link, Catalog catalog, String hint) async {
+    final before = {
+      for (final node in _nodes)
+        if (node.centerLinkId == link.id) node.id,
+    };
+    final merged = mergeCenterCatalog(
+      existing: _nodes,
+      link: link,
+      catalog: catalog,
+      newId: _newId,
+    );
+    final after = {
+      for (final node in merged.nodes)
+        if (node.centerLinkId == link.id) node.id,
+    };
+    for (final id in before.difference(after)) {
+      await _vault.delete(nodeTokenKey(id));
+    }
+    for (final node in merged.nodes) {
+      if (node.centerLinkId == link.id && node.confidential) {
+        await _vault.delete(nodeTokenKey(node.id));
+      }
+    }
+    for (final entry in merged.credentials.entries) {
+      await _vault.write(nodeTokenKey(entry.key), entry.value);
+    }
+    setState(() {
+      if (!_centers.any((item) => item.id == link.id)) {
+        _centers = [..._centers, link];
+      }
+      _nodes = merged.nodes;
+      _centerHint = hint;
+    });
+    await _persist();
+  }
+
+  Widget _centerTile(CenterLink link, bool running) {
+    final servers = [
+      for (final node in _nodes)
+        if (node.centerLinkId == link.id) node,
+    ];
+    final title = link.account.isEmpty ? link.url : '${link.account} · ${link.url}';
+    return ExpansionTile(
+      tilePadding: EdgeInsets.zero,
+      title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
+      subtitle: Text('${servers.length} 台服务器'),
+      children: [
+        for (final node in servers)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(node.name),
+            subtitle: Text(
+              node.confidential ? '地址由中心代为连接，本机不保存。' : node.baseUrl,
+            ),
+          ),
+        Wrap(
+          spacing: 8,
+          children: [
+            TextButton(
+              onPressed: running ? null : () => _refreshCenter(link),
+              child: const Text('刷新'),
+            ),
+            TextButton(
+              onPressed: running ? null : () => _removeCenter(link),
+              child: const Text('移除'),
+            ),
+          ],
+        ),
       ],
     );
   }
@@ -492,6 +948,11 @@ class _HomePageState extends State<HomePage> {
         if (view.note.isNotEmpty) ...[
           const SizedBox(height: 8),
           Text(view.note, style: const TextStyle(color: ink)),
+        ],
+        if (view.detail['httpVersion'] != null ||
+            view.detail['statusCode'] != null) ...[
+          const SizedBox(height: 8),
+          Text(_httpSummary(view.detail), style: const TextStyle(color: ink)),
         ],
         if (motd != null || version != null || players != null) ...[
           const SizedBox(height: 8),
@@ -622,6 +1083,10 @@ class _NodeDialogState extends State<_NodeDialog> {
   }
 
   void _beginEdit(RemoteNode node) {
+    if (node.fromCenter) {
+      setState(() => _hint = '中心分配的名称和地址不能在这里修改。需要变更时，回到中心刷新。');
+      return;
+    }
     setState(() {
       _editingId = node.id;
       _name.text = node.name;
@@ -642,6 +1107,10 @@ class _NodeDialogState extends State<_NodeDialog> {
   }
 
   Future<void> _check(RemoteNode node) async {
+    if (node.confidential) {
+      setState(() => _hint = '这台服务器由中心代为连接，本机没有地址，不能直接检查。');
+      return;
+    }
     try {
       final info = await fetchNodeInfo(node.baseUrl);
       final next = [
@@ -695,18 +1164,21 @@ class _NodeDialogState extends State<_NodeDialog> {
                     '${node.name} · ${visibilityLabel(node.visibility)}',
                   ),
                   subtitle: Text(
-                    node.baseUrl,
-                    maxLines: 1,
+                    node.confidential
+                        ? '地址由中心代为连接，本机不保存。'
+                        : node.baseUrl,
+                    maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
                   trailing: Wrap(
                     spacing: 4,
                     children: [
-                      TextButton(
-                        key: Key('edit-node-${node.id}'),
-                        onPressed: () => _beginEdit(node),
-                        child: const Text('编辑'),
-                      ),
+                      if (!node.fromCenter)
+                        TextButton(
+                          key: Key('edit-node-${node.id}'),
+                          onPressed: () => _beginEdit(node),
+                          child: const Text('编辑'),
+                        ),
                       TextButton(
                         onPressed: () => _check(node),
                         child: const Text('检查'),

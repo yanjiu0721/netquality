@@ -30,6 +30,9 @@ type jobSpec struct {
 	DNSName    string
 	Payload    []byte
 	Expect     []byte
+	Allow4     bool
+	Allow6     bool
+	HTTP       HTTPInput
 }
 
 type Limits struct {
@@ -69,6 +72,8 @@ type Node struct {
 	ExtraNets    []*net.IPNet
 	Limits       Limits
 	Resolver     resolver
+	CenterKey    []byte
+	ServerID     string
 
 	mu   sync.Mutex
 	jobs map[string]*probeJob
@@ -93,7 +98,7 @@ func newNode(token string, allowPrivate bool, extra []*net.IPNet, limits Limits)
 	return n
 }
 
-func (n *Node) Public() bool { return n.Token == "" }
+func (n *Node) Public() bool { return n.Token == "" && len(n.CenterKey) == 0 }
 
 func (n *Node) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -116,8 +121,9 @@ func (n *Node) info(w http.ResponseWriter, _ *http.Request) {
 		"authRequired": !n.Public(),
 		"profiles": []string{
 			"nq-tcp", "nq-udp", "tcp-connect", "udp-generic", "dns",
-			"minecraft-java", "minecraft-bedrock", "custom-udp",
+			"minecraft-java", "minecraft-bedrock", "custom-udp", "http",
 		},
+		"ipFamily": true,
 		"limits": map[string]int{
 			"maxJobs":        n.Limits.MaxJobs,
 			"maxDurationSec": int(n.Limits.MaxDuration / time.Second),
@@ -131,16 +137,20 @@ func (n *Node) info(w http.ResponseWriter, _ *http.Request) {
 
 func (n *Node) auth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if n.Token == "" {
+		if n.Public() {
 			next(w, r)
 			return
 		}
 		got := bearer(r.Header.Get("Authorization"))
-		if got == "" || subtle.ConstantTimeCompare([]byte(got), []byte(n.Token)) != 1 {
-			writeErr(w, http.StatusUnauthorized, "unauthorized", "节点口令不正确或未提供")
+		if n.Token != "" && got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(n.Token)) == 1 {
+			next(w, r)
 			return
 		}
-		next(w, r)
+		if verifyCredential(got, n.CenterKey, n.ServerID, time.Now()) {
+			next(w, r)
+			return
+		}
+		writeErr(w, http.StatusUnauthorized, "unauthorized", "节点口令不正确或未提供")
 	}
 }
 
@@ -152,10 +162,13 @@ type createReq struct {
 	TimeoutMs   int    `json:"timeoutMs"`
 	DurationSec int    `json:"durationSec"`
 	PacketSize  int    `json:"packetSize"`
-	EchoToken   string `json:"echoToken"`
-	DNSName     string `json:"dnsName"`
-	PayloadHex  string `json:"payloadHex"`
-	ExpectHex   string `json:"expectHex"`
+	EchoToken   string          `json:"echoToken"`
+	DNSName     string          `json:"dnsName"`
+	PayloadHex  string          `json:"payloadHex"`
+	ExpectHex   string          `json:"expectHex"`
+	AllowIPv4   *bool           `json:"allowIPv4"`
+	AllowIPv6   *bool           `json:"allowIPv6"`
+	HTTP        *httpOptionsReq `json:"http"`
 }
 
 func (n *Node) create(w http.ResponseWriter, r *http.Request) {
@@ -205,10 +218,12 @@ func (n *Node) create(w http.ResponseWriter, r *http.Request) {
 
 func (n *Node) prepare(ctx context.Context, req createReq) (jobSpec, error) {
 	switch req.Profile {
-	case "nq-tcp", "nq-udp", "tcp-connect", "udp-generic", "dns", "minecraft-java", "minecraft-bedrock", "custom-udp":
+	case "nq-tcp", "nq-udp", "tcp-connect", "udp-generic", "dns", "minecraft-java", "minecraft-bedrock", "custom-udp", "http":
 	default:
 		return jobSpec{}, &apiError{http.StatusBadRequest, "bad_profile", "不支持的探测类型"}
 	}
+	allow4 := flagOrDefault(req.AllowIPv4, true)
+	allow6 := flagOrDefault(req.AllowIPv6, true)
 	if req.Port < 1 || req.Port > 65535 {
 		return jobSpec{}, &apiError{http.StatusBadRequest, "bad_port", "端口需要在 1 到 65535 之间"}
 	}
@@ -257,7 +272,31 @@ func (n *Node) prepare(ctx context.Context, req createReq) (jobSpec, error) {
 			}
 		}
 	}
-	ips, err := resolveTargets(ctx, n.Resolver, req.Target, n.AllowPrivate, n.ExtraNets)
+	httpIn := HTTPInput{
+		Target: req.Target, Port: req.Port, Timeout: timeout,
+		Allow4: allow4, Allow6: allow6, CheckSafety: true,
+		AllowPrivate: n.AllowPrivate, Extra: n.ExtraNets, Resolver: n.Resolver,
+	}
+	applyHTTPOptions(&httpIn, req.HTTP)
+	lookupHost := req.Target
+	if req.Profile == "http" {
+		page, err := buildHTTPURL(req.Target, req.Port)
+		if err != nil {
+			return jobSpec{}, &apiError{http.StatusBadRequest, "bad_target", err.Error()}
+		}
+		if _, err := normalizeHTTPVersion(httpIn.Version); err != nil {
+			return jobSpec{}, &apiError{http.StatusBadRequest, "bad_profile", err.Error()}
+		}
+		method := strings.ToUpper(strings.TrimSpace(httpIn.Method))
+		if method != "" && method != "GET" && method != "POST" {
+			return jobSpec{}, &apiError{http.StatusBadRequest, "bad_request", "HTTP 方法只支持 GET 和 POST"}
+		}
+		lookupHost = page.Hostname()
+		if strings.TrimSpace(httpIn.Resolve) != "" {
+			lookupHost = strings.TrimSpace(httpIn.Resolve)
+		}
+	}
+	ips, err := resolveTargets(ctx, n.Resolver, lookupHost, n.AllowPrivate, n.ExtraNets)
 	if err != nil {
 		var dnsErr *net.DNSError
 		if errors.As(err, &dnsErr) {
@@ -268,11 +307,19 @@ func (n *Node) prepare(ctx context.Context, req createReq) (jobSpec, error) {
 		}
 		return jobSpec{}, &apiError{http.StatusBadRequest, "bad_target", "目标地址无效"}
 	}
+	ips, err = filterFamily(lookupHost, ips, allow4, allow6)
+	if err != nil {
+		if fe, ok := asFamily(err); ok {
+			return jobSpec{}, &apiError{http.StatusBadRequest, "bad_family", fe.Error()}
+		}
+		return jobSpec{}, &apiError{http.StatusBadRequest, "bad_family", "地址族不被允许"}
+	}
 	return jobSpec{
 		Host: req.Target, Port: req.Port, Profile: req.Profile, IP: ips[0],
 		state:    &dialState{picker: newEndpointPicker(ips)},
 		Interval: interval, Timeout: timeout, Duration: duration, PacketSize: size,
 		Echo: echo, DNSName: req.DNSName, Payload: payload, Expect: expect,
+		Allow4: allow4, Allow6: allow6, HTTP: httpIn,
 	}, nil
 }
 

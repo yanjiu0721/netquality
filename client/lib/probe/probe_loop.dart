@@ -4,10 +4,12 @@ import 'dart:typed_data';
 
 import '../metrics/sample_book.dart';
 import '../metrics/selection_ledger.dart';
+import '../models/ip_family.dart';
 import '../protocol/probe_packet.dart';
 import '../ui/address_text.dart';
 import 'endpoint_picker.dart';
 import 'game_codec.dart';
+import 'http_helper.dart';
 
 class ProbeRequest {
   const ProbeRequest({
@@ -21,6 +23,16 @@ class ProbeRequest {
     required this.dnsName,
     required this.payloadHex,
     required this.expectHex,
+    this.allowIPv4 = true,
+    this.allowIPv6 = true,
+    this.httpVersion = 'auto',
+    this.httpResolve = '',
+    this.httpMethod = 'GET',
+    this.httpBody = '',
+    this.httpReferer = '',
+    this.httpUserAgent = '',
+    this.httpCookies = '',
+    this.httpMaxRedirects = 5,
   });
 
   final String host;
@@ -33,12 +45,22 @@ class ProbeRequest {
   final String dnsName;
   final String payloadHex;
   final String expectHex;
+  final bool allowIPv4;
+  final bool allowIPv6;
+  final String httpVersion;
+  final String httpResolve;
+  final String httpMethod;
+  final String httpBody;
+  final String httpReferer;
+  final String httpUserAgent;
+  final String httpCookies;
+  final int httpMaxRedirects;
 }
 
 /// Sends one probe at a time from this device. A cancelled attempt is not
 /// recorded, so stopping cannot paint a fake loss sample.
 class ProbeLoop {
-  ProbeLoop({this.lookup, this.onEndpoint, this.onResolved});
+  ProbeLoop({this.lookup, this.onEndpoint, this.onResolved, this.helperPath});
 
   /// Replaces [lookupAll] in tests.
   final Future<List<InternetAddress>> Function(String host)? lookup;
@@ -48,6 +70,10 @@ class ProbeLoop {
 
   /// Fires once with the lookup result. This is not the address in use.
   final void Function(List<InternetAddress> addresses)? onResolved;
+
+  /// Overrides the Go HTTP engine binary. Null looks beside the app and at
+  /// NQ_PROBE_HELPER.
+  final String? helperPath;
 
   _TcpPipe? _tcp;
   _UdpPipe? _udp;
@@ -59,6 +85,9 @@ class ProbeLoop {
   int _seq = 0;
   int _dnsId = 1;
   final int _guid = DateTime.now().microsecondsSinceEpoch;
+  bool _allow4 = true;
+  bool _allow6 = true;
+  HttpHelperSession? _http;
 
   Future<void> run({
     required ProbeRequest request,
@@ -66,6 +95,23 @@ class ProbeLoop {
     required bool Function() cancelled,
   }) async {
     final book = SampleBook(request.profileId);
+    _allow4 = request.allowIPv4;
+    _allow6 = request.allowIPv6;
+    final refusal = familyRefusal(
+      request.host,
+      v4: request.allowIPv4,
+      v6: request.allowIPv6,
+    );
+    if (refusal != null) {
+      final outcome = Outcome(
+        status: Outcome.error,
+        kind: Outcome.query,
+        note: refusal,
+      );
+      book.add(outcome);
+      onSample(book.sample(1, outcome));
+      return;
+    }
     try {
       while (!cancelled()) {
         final started = DateTime.now();
@@ -108,6 +154,11 @@ class ProbeLoop {
   }
 
   Future<void> close() async {
+    final http = _http;
+    _http = null;
+    if (http != null) {
+      await http.close();
+    }
     final tcp = _tcp;
     _tcp = null;
     if (tcp != null) {
@@ -165,6 +216,8 @@ class ProbeLoop {
         return _java(request, cancelled);
       case 'minecraft-bedrock':
         return _bedrock(request, cancelled);
+      case 'http':
+        return _httpProbe(request);
       default:
         return Future.value(
           const Outcome(
@@ -656,9 +709,35 @@ class ProbeLoop {
       return cached;
     }
     final found = await (lookup ?? lookupAll)(host);
-    _resolved = found;
-    onResolved?.call(found);
-    return found;
+    final kept = filterAddresses(found, v4: _allow4, v6: _allow6);
+    if (kept.isEmpty) {
+      throw const SocketException('解析到的地址都不在已打开的地址族里');
+    }
+    _resolved = kept;
+    onResolved?.call(kept);
+    return kept;
+  }
+
+  Future<Outcome> _httpProbe(ProbeRequest request) async {
+    final session = _http ??= HttpHelperSession(binary: helperPath);
+    return session.probe({
+      'profile': 'http',
+      'target': request.host,
+      'port': request.port,
+      'timeoutMs': request.timeout.inMilliseconds,
+      'allowIPv4': request.allowIPv4,
+      'allowIPv6': request.allowIPv6,
+      'http': {
+        'version': request.httpVersion,
+        'resolve': request.httpResolve,
+        'method': request.httpMethod,
+        'body': request.httpBody,
+        'referer': request.httpReferer,
+        'userAgent': request.httpUserAgent,
+        'cookies': request.httpCookies,
+        'maxRedirects': request.httpMaxRedirects,
+      },
+    });
   }
 
   Future<_TcpOpen> _openTcp(
@@ -809,6 +888,13 @@ Outcome _stampAddress(Outcome outcome, InternetAddress peer) {
 }
 
 Outcome classifySocket(SocketException error, {bool reconnect = false}) {
+  if (error.message.contains('地址族') || error.message.contains('已关闭')) {
+    return Outcome(
+      status: Outcome.error,
+      kind: Outcome.query,
+      note: error.message,
+    );
+  }
   final text = '${error.message} ${error.osError?.message ?? ''}'.toLowerCase();
   final code = error.osError?.errorCode;
   if (text.contains('timed out') || text.contains('timeout')) {

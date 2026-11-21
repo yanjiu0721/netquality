@@ -273,7 +273,9 @@ class SampleBook {
         if (denom > 0) {
           probeLoss = timeout * 100 / denom;
         }
-      } else if (profile == 'tcp-connect' || profile == 'minecraft-java') {
+      } else if (profile == 'tcp-connect' ||
+          profile == 'minecraft-java' ||
+          profile == 'http') {
         final denom = ok + timeout + refused + dns + protocol + other;
         if (denom > 0) {
           failure = (denom - ok) * 100 / denom;

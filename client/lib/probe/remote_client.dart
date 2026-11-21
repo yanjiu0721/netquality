@@ -10,6 +10,7 @@ class RemoteProbe {
   HttpClient? _client;
   String? _jobId;
   Uri? _base;
+  String _jobsPath = '/v1/jobs';
 
   Future<void> run({
     required String baseUrl,
@@ -18,19 +19,21 @@ class RemoteProbe {
     required void Function(ProbeSample sample) onSample,
     required bool Function() cancelled,
     void Function(List<ResolvedAddress> resolved)? onResolved,
+    String jobsPath = '/v1/jobs',
   }) async {
     final normalized = normalizeNodeUrl(baseUrl);
     if (normalized == null) {
       throw RemoteException('节点地址需要是 http 或 https，且不能把口令写在地址里');
     }
     _base = Uri.parse(normalized);
+    _jobsPath = jobsPath.startsWith('/') ? jobsPath : '/$jobsPath';
     final client = HttpClient();
     _client = client;
     try {
       final created = await _send(
         client,
         'POST',
-        _base!.resolve('/v1/jobs'),
+        _base!.resolve(_jobsPath),
         nodeToken,
         utf8.encode(jsonEncode(body.toJson())),
       );
@@ -92,7 +95,7 @@ class RemoteProbe {
         await _send(
           client,
           'DELETE',
-          base.resolve('/v1/jobs/$id'),
+          base.resolve('$_jobsPath/$id'),
           nodeToken,
           const [],
         );
@@ -111,7 +114,7 @@ class RemoteProbe {
     bool Function() cancelled,
   ) async {
     final request = await client.getUrl(
-      _base!.resolve('/v1/jobs/$_jobId/stream'),
+      _base!.resolve('$_jobsPath/$_jobId/stream'),
     );
     request.followRedirects = false;
     _auth(request, nodeToken);
@@ -154,6 +157,9 @@ class ProbeBody {
     required this.dnsName,
     required this.payloadHex,
     required this.expectHex,
+    this.allowIPv4 = true,
+    this.allowIPv6 = true,
+    this.http,
   });
 
   final String target;
@@ -167,6 +173,9 @@ class ProbeBody {
   final String dnsName;
   final String payloadHex;
   final String expectHex;
+  final bool allowIPv4;
+  final bool allowIPv6;
+  final Map<String, Object?>? http;
 
   Map<String, Object?> toJson() => {
     'target': target,
@@ -180,6 +189,9 @@ class ProbeBody {
     'dnsName': dnsName,
     'payloadHex': payloadHex,
     'expectHex': expectHex,
+    'allowIPv4': allowIPv4,
+    'allowIPv6': allowIPv6,
+    if (http != null) 'http': http,
   };
 }
 
@@ -192,10 +204,32 @@ class RemoteException implements Exception {
 }
 
 class NodeInfo {
-  const NodeInfo({required this.visibility, required this.authRequired});
+  const NodeInfo({
+    required this.visibility,
+    required this.authRequired,
+    this.profiles = const [],
+    this.ipFamily = false,
+  });
 
   final String visibility;
   final bool authRequired;
+  final List<String> profiles;
+  final bool ipFamily;
+}
+
+String? remoteUpgradeMessage(
+  NodeInfo info, {
+  required String profileId,
+  required bool allow4,
+  required bool allow6,
+}) {
+  if (profileId == 'http' && !info.profiles.contains('http')) {
+    return '这个节点还不支持 HTTP 探测，需要升级到 1.1.3。';
+  }
+  if ((!allow4 || !allow6) && !info.ipFamily) {
+    return '这个节点还不会遵守 IPv4 / IPv6 开关，需要升级到 1.1.3。';
+  }
+  return null;
 }
 
 Future<NodeInfo> fetchNodeInfo(String baseUrl) async {
@@ -218,11 +252,22 @@ Future<NodeInfo> fetchNodeInfo(String baseUrl) async {
     if (json is! Map) {
       throw RemoteException('节点信息无效');
     }
+    final profiles = <String>[];
+    final rawProfiles = json['profiles'];
+    if (rawProfiles is List) {
+      for (final item in rawProfiles) {
+        if (item is String) {
+          profiles.add(item);
+        }
+      }
+    }
     return NodeInfo(
       visibility: json['visibility'] is String
           ? json['visibility'] as String
           : '',
       authRequired: json['authRequired'] == true,
+      profiles: profiles,
+      ipFamily: json['ipFamily'] == true,
     );
   } on RemoteException {
     rethrow;

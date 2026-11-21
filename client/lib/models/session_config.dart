@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../protocol/probe_packet.dart';
+import 'ip_family.dart';
 import 'probe_profile.dart';
 
 class RemoteNode {
@@ -9,35 +10,95 @@ class RemoteNode {
     required this.name,
     required this.baseUrl,
     this.visibility = '',
+    this.fromCenter = false,
+    this.confidential = false,
+    this.centerLinkId = '',
+    this.serverId = '',
   });
 
   final String id;
   final String name;
   final String baseUrl;
   final String visibility;
+  final bool fromCenter;
+  final bool confidential;
+  final String centerLinkId;
+  final String serverId;
 
-  RemoteNode copyWith({String? name, String? baseUrl, String? visibility}) {
+  RemoteNode copyWith({
+    String? name,
+    String? baseUrl,
+    String? visibility,
+    bool? fromCenter,
+    bool? confidential,
+    String? centerLinkId,
+    String? serverId,
+  }) {
+    final hidden = confidential ?? this.confidential;
     return RemoteNode(
       id: id,
       name: name ?? this.name,
-      baseUrl: baseUrl ?? this.baseUrl,
+      baseUrl: hidden ? '' : (baseUrl ?? this.baseUrl),
       visibility: visibility ?? this.visibility,
+      fromCenter: fromCenter ?? this.fromCenter,
+      confidential: hidden,
+      centerLinkId: centerLinkId ?? this.centerLinkId,
+      serverId: serverId ?? this.serverId,
     );
   }
 
   Map<String, Object?> toJson() => {
     'id': id,
     'name': name,
-    'baseUrl': baseUrl,
+    'baseUrl': confidential ? '' : baseUrl,
     'visibility': visibility,
+    'fromCenter': fromCenter,
+    'confidential': confidential,
+    'centerLinkId': centerLinkId,
+    'serverId': serverId,
   };
 
   factory RemoteNode.fromJson(Map<String, dynamic> json) {
+    final confidential = json['confidential'] == true;
     return RemoteNode(
       id: json['id'] is String ? json['id'] as String : '',
       name: json['name'] is String ? json['name'] as String : '未命名节点',
-      baseUrl: json['baseUrl'] is String ? json['baseUrl'] as String : '',
+      baseUrl: confidential
+          ? ''
+          : (json['baseUrl'] is String ? json['baseUrl'] as String : ''),
       visibility: json['visibility'] is String ? json['visibility'] as String : '',
+      fromCenter: json['fromCenter'] == true,
+      confidential: confidential,
+      centerLinkId: json['centerLinkId'] is String
+          ? json['centerLinkId'] as String
+          : '',
+      serverId: json['serverId'] is String ? json['serverId'] as String : '',
+    );
+  }
+}
+
+class CenterLink {
+  const CenterLink({
+    required this.id,
+    required this.url,
+    required this.account,
+  });
+
+  final String id;
+  final String url;
+  final String account;
+
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'url': url,
+    'account': account,
+  };
+
+  factory CenterLink.fromJson(Map<String, dynamic> json) {
+    return CenterLink(
+      id: json['id'] is String ? json['id'] as String : '',
+      url: json['url'] is String ? json['url'] as String : '',
+      account: json['account'] is String ? json['account'] as String : '',
     );
   }
 }
@@ -57,6 +118,18 @@ class SessionConfig {
     required this.dnsName,
     required this.payloadHex,
     required this.expectHex,
+    this.allowIPv4 = true,
+    this.allowIPv6 = true,
+    this.autoUpdate = true,
+    this.httpVersion = 'auto',
+    this.httpResolve = '',
+    this.httpMethod = 'GET',
+    this.httpBody = '',
+    this.httpReferer = '',
+    this.httpUserAgent = '',
+    this.httpCookies = '',
+    this.httpMaxRedirects = 5,
+    this.centers = const [],
   });
 
   static const defaults = SessionConfig(
@@ -88,6 +161,27 @@ class SessionConfig {
   final String dnsName;
   final String payloadHex;
   final String expectHex;
+  final bool allowIPv4;
+  final bool allowIPv6;
+  final bool autoUpdate;
+  final String httpVersion;
+  final String httpResolve;
+  final String httpMethod;
+  final String httpBody;
+  final String httpReferer;
+  final String httpUserAgent;
+  final String httpCookies;
+  final int httpMaxRedirects;
+  final List<CenterLink> centers;
+
+  CenterLink? centerLink(String id) {
+    for (final link in centers) {
+      if (link.id == id) {
+        return link;
+      }
+    }
+    return null;
+  }
 
   ProbeProfile get profile => ProbeProfile.byId(profileId);
 
@@ -101,8 +195,35 @@ class SessionConfig {
   }
 
   String? validate() {
+    final family = familyRefusal(host, v4: allowIPv4, v6: allowIPv6);
+    if (family != null) {
+      return family;
+    }
+    if (profileId == 'http' && httpResolve.trim().isNotEmpty) {
+      final resolveFamily = familyRefusal(
+        httpResolve,
+        v4: allowIPv4,
+        v6: allowIPv6,
+      );
+      if (resolveFamily != null) {
+        return resolveFamily.replaceFirst('目标', '指定解析');
+      }
+    }
     if (host.trim().isEmpty) {
       return '请填写目标地址';
+    }
+    if (profileId == 'http') {
+      final method = httpMethod.trim().toUpperCase();
+      if (method != 'GET' && method != 'POST') {
+        return 'HTTP 方法只支持 GET 和 POST';
+      }
+      if (httpMaxRedirects < 0 || httpMaxRedirects > 20) {
+        return '跳转次数需要在 0 到 20 之间';
+      }
+      const versions = {'auto', '1.1', '2', '3'};
+      if (!versions.contains(httpVersion)) {
+        return 'HTTP 版本需要是自动、1.1、2 或 3';
+      }
     }
     if (port < 1 || port > 65535) {
       return '端口需要在 1 到 65535 之间';
@@ -146,7 +267,12 @@ class SessionConfig {
       if (selected == null) {
         return '请先添加并选择一个远程节点';
       }
-      if (normalizeNodeUrl(selected.baseUrl) == null) {
+      if (selected.confidential) {
+        final link = centerLink(selected.centerLinkId);
+        if (link == null || normalizeNodeUrl(link.url) == null) {
+          return '保密节点需要一个可用的中心地址';
+        }
+      } else if (normalizeNodeUrl(selected.baseUrl) == null) {
         return '节点地址需要是 http 或 https，且不能把口令写在地址里';
       }
     }
@@ -167,6 +293,18 @@ class SessionConfig {
     'dnsName': dnsName,
     'payloadHex': payloadHex,
     'expectHex': expectHex,
+    'allowIPv4': allowIPv4,
+    'allowIPv6': allowIPv6,
+    'autoUpdate': autoUpdate,
+    'httpVersion': httpVersion,
+    'httpResolve': httpResolve,
+    'httpMethod': httpMethod,
+    'httpBody': httpBody,
+    'httpReferer': httpReferer,
+    'httpUserAgent': httpUserAgent,
+    'httpCookies': httpCookies,
+    'httpMaxRedirects': httpMaxRedirects,
+    'centers': centers.map((link) => link.toJson()).toList(),
   };
 
   factory SessionConfig.fromJson(Map<String, dynamic> json) {
@@ -197,7 +335,41 @@ class SessionConfig {
           : defaults.dnsName,
       payloadHex: json['payloadHex'] is String ? json['payloadHex'] as String : '',
       expectHex: json['expectHex'] is String ? json['expectHex'] as String : '',
+      allowIPv4: json['allowIPv4'] is bool ? json['allowIPv4'] as bool : true,
+      allowIPv6: json['allowIPv6'] is bool ? json['allowIPv6'] as bool : true,
+      autoUpdate: json['autoUpdate'] is bool ? json['autoUpdate'] as bool : true,
+      httpVersion: json['httpVersion'] is String
+          ? json['httpVersion'] as String
+          : 'auto',
+      httpResolve: json['httpResolve'] is String
+          ? json['httpResolve'] as String
+          : '',
+      httpMethod: json['httpMethod'] is String
+          ? json['httpMethod'] as String
+          : 'GET',
+      httpBody: json['httpBody'] is String ? json['httpBody'] as String : '',
+      httpReferer: json['httpReferer'] is String
+          ? json['httpReferer'] as String
+          : '',
+      httpUserAgent: json['httpUserAgent'] is String
+          ? json['httpUserAgent'] as String
+          : '',
+      httpCookies: json['httpCookies'] is String
+          ? json['httpCookies'] as String
+          : '',
+      httpMaxRedirects: _asInt(json['httpMaxRedirects'], 5),
+      centers: _centers(json['centers']),
     );
+  }
+
+  static List<CenterLink> _centers(Object? raw) {
+    if (raw is! List) {
+      return const [];
+    }
+    return [
+      for (final item in raw)
+        if (item is Map) CenterLink.fromJson(Map<String, dynamic>.from(item)),
+    ];
   }
 
   static int _asInt(Object? value, int fallback) {

@@ -1,6 +1,6 @@
 # 网络质量探测 · Linux 桌面客户端
 
-这是 1.1.2 的 Linux 64 位桌面程序，解压后可以直接运行。不需要再安装 Flutter。
+这是 1.1.3 的 Linux 64 位桌面程序，解压后可以直接运行。不需要再安装 Flutter。HTTP 探测还需要同一目录里的 `netquality-reflector`。
 
 ## 先安装系统库
 

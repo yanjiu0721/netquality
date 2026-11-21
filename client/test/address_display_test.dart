@@ -84,10 +84,14 @@ void main() {
   });
 
   test('history only lists the real tag and this version', () {
-    expect(appVersion, '1.1.2');
-    expect(appBuild, 5);
+    expect(appVersion, '1.1.3');
+    expect(appBuild, 6);
     expect(appAttribution, '言灸');
-    expect(releaseHistory.map((entry) => entry.version), ['1.1.2', '1.1.1']);
+    expect(releaseHistory.map((entry) => entry.version), [
+      '1.1.3',
+      '1.1.2',
+      '1.1.1',
+    ]);
     expect(releaseHistory.last.published, '2026-11-09');
     expect(releaseHistory.last.source, contains('v1.1.1'));
     expect(releaseHistoryNote, contains('不写成另一个版本'));

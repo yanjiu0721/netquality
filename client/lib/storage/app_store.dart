@@ -5,11 +5,13 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/session_config.dart';
+import '../models/target_history.dart';
 import 'token_vault.dart';
 
 class AppStore {
   static const _key = 'netquality.settings.v2';
   static const _legacy = 'netquality.settings.v1';
+  static const historyKey = 'netquality.target-history.v1';
 
   Future<({SessionConfig config, String legacyEcho})> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -44,6 +46,16 @@ class AppStore {
   Future<void> save(SessionConfig config) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_key, jsonEncode(config.toJson()));
+  }
+
+  Future<TargetHistory> loadHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    return TargetHistory.decode(prefs.getString(historyKey) ?? '');
+  }
+
+  Future<void> saveHistory(TargetHistory history) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(historyKey, history.encode());
   }
 }
 

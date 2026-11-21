@@ -172,7 +172,7 @@ func (b *sampleBook) summary() summaryMsg {
 			v := float64(b.timeout) * 100 / float64(b.timeout+b.ok)
 			s.ProbeLossPct = &v
 		}
-	case "tcp-connect", "minecraft-java":
+	case "tcp-connect", "minecraft-java", "http":
 		denom := b.ok + b.timeout + b.refused + b.dns + b.protocol + b.other
 		if denom > 0 {
 			v := float64(denom-b.ok) * 100 / float64(denom)

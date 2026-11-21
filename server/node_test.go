@@ -79,8 +79,18 @@ func TestPublicAndPrivateAuth(t *testing.T) {
 	if err := json.NewDecoder(info.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body["visibility"] != "public" || body["authRequired"] != false {
+	if body["visibility"] != "public" || body["authRequired"] != false || body["ipFamily"] != true {
 		t.Fatalf("info %+v", body)
+	}
+	profiles, _ := body["profiles"].([]any)
+	seenHTTP := false
+	for _, item := range profiles {
+		if item == "http" {
+			seenHTTP = true
+		}
+	}
+	if !seenHTTP {
+		t.Fatalf("info profiles %+v", body["profiles"])
 	}
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
