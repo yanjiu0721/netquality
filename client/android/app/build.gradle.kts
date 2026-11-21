@@ -29,10 +29,28 @@ android {
         versionName = flutter.versionName
     }
 
+    // 1.1.3 及以后的 debug / release 都用仓库里的这一把。缺文件就失败，不要回退到本机新建的 debug.keystore。
+    val sharedDebugKeystore = rootProject.file("keystore/debug.keystore")
+    if (!sharedDebugKeystore.isFile) {
+        throw GradleException(
+            "缺少 client/android/keystore/debug.keystore。后续版本必须沿用 1.1.3 的调试证书，不要另建密钥。",
+        )
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            storeFile = sharedDebugKeystore
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
         }
     }
