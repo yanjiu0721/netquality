@@ -69,6 +69,12 @@ MetricLine _timeoutLine(ProbeSummary summary, String profileId) {
     case 'tcp-connect':
     case 'minecraft-java':
       return const MetricLine('超时', '不适用', detail: '这种探测把连不上记为失败，不单独叫探测超时。');
+    case 'http':
+      return const MetricLine(
+        '超时',
+        '不适用',
+        detail: 'HTTP 把连不上记为失败。已经收到的 4xx 和 5xx 是状态码，不是丢包，也不算进超时。',
+      );
     default:
       return MetricLine(
         '超时',
@@ -96,6 +102,12 @@ MetricLine _rateLine(ProbeSummary summary, String profileId) {
         '失败率',
         formatPct(summary.failurePct),
         detail: '未成功的正式尝试 ÷ 已完成的正式尝试。这不是物理丢包。',
+      );
+    case 'http':
+      return MetricLine(
+        '失败率',
+        formatPct(summary.failurePct),
+        detail: '连不上或协议不对才算失败。收到 HTTP 响应就算成功，4xx 和 5xx 只显示状态码，不叫丢包。曲线上的延迟是这一次的总时间。',
       );
     default:
       return MetricLine(

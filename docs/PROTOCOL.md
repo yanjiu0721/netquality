@@ -44,6 +44,7 @@
 - **普通 TCP**：只记录连接耗时、成功或失败、连续失败。没有自定义帧。
 - **普通 UDP、DNS、自定义 UDP、基岩版**：没有收到符合协议的包时记为无应答/未知，不叫丢包。内容不对记为协议错误。
 - **Minecraft Java**：状态握手加上 ping/pong。往返时间只算 ping 到对上 nonce 的 pong。连不上或协议不对记为失败率。
+- **HTTP**：一次完整的 HTTP 响应算成功，4xx 和 5xx 写在状态码里，不叫丢包。连不上、TLS 失败、或强制的版本不被支持，记为失败率。曲线上的延迟是这一次的总时间。`detail` 另有 `dnsMs`、`connectMs`、`tlsMs`、`ttfbMs`、`totalMs`、`statusCode`、`finalUrl`、`httpVersion`（`1.1` / `2` / `3`）和 `redirects`。HTTP/3 的连接和 TLS 是同一次 QUIC 握手，这两项时间相同。
 - **抖动**：RFC 3550。相邻两次成功的往返时间差 `D`，`J = J + (|D| - J) / 16`。第一次成功时 J 为 0。
 - **延迟分布**：只统计成功样本。当前延迟是最近一次成功。最小、最大是极值。平均是算术平均。中位数在奇数个时取排序后的中间值，偶数个时取中间两个的平均。P95 用最近秩，秩 = ceil(0.95 × 次数)，用整数 `(95 × 次数 + 99) / 100` 计算，从 1 起计。
 - **选址**：一个名字解析出多个地址时，还没有任何地址应答之前的失败只用于挑选地址。后面有地址成功时，这些失败不进入已发送、超时和丢包，并在 `detail.fallback` 里说明。选定之后的失败照常计入。每个候选都失败时，这些失败计入正式结果，不能显示成 0% 成功。每条样本的 `detail.address` 和 `detail.family` 是这次实际连通或发包的地址；没有这个字段就表示节点没有报告，不能用解析结果代替。`summary` 另有 `minRttMs`、`meanRttMs`、`medianRttMs`、`p95RttMs`、`maxRttMs` 和 `selectionSkipped`。旧客户端会忽略不认识的字段。
@@ -54,7 +55,7 @@
 
 其余接口在配置了 `-node-token` 时都要先带 `Authorization: Bearer`，用常数时间比较。没带或不对就返回 401，并且不会向目标拨号。没配置节点口令时，这些接口公开可用。
 
-- `POST /v1/jobs` 创建一次探测。正文里的 `echoToken` 是反射帧口令，不是节点口令。
+- `POST /v1/jobs` 创建一次探测。正文里的 `echoToken` 是反射帧口令，不是节点口令。`allowIPv4` 和 `allowIPv6` 省略时都当作打开，这样 1.1.2 的客户端仍然能用。两个都是 false 时返回 400，不会拨号。HTTP 任务再带一个 `http` 对象，字段见下面的类型表。
 - `GET /v1/jobs/{id}/stream` 用 Server-Sent Events 推送已经在节点上算好的样本。
 - `DELETE /v1/jobs/{id}` 停止。客户端断开结果流时，节点也会停止。任务有绝对到期时间，没人来看也会在大约 15 秒后停掉。
 
@@ -71,6 +72,32 @@
 | `minecraft-java` | 状态握手（协议号 767）加 ping/pong |
 | `minecraft-bedrock` | RakNet Unconnected Ping，magic 和时间戳都要对上 |
 | `custom-udp` | 十六进制载荷，可选响应前缀 |
+| `http` | HTTP/1.1、HTTP/2 或 HTTP/3。`GET /v1/info` 的 `profiles` 里有 `http`，并且 `ipFamily` 为 true。没有这两项的是 1.1.2 节点 |
+
+`http` 对象：
+
+| 字段 | 说明 |
+| --- | --- |
+| `version` | `auto`（默认，HTTP/2，不行再降到 1.1）、`1.1`、`2`、`3`。强制的版本不被支持就失败，不降级。明文强制 2 或 3 会失败，因为那两种需要 HTTPS |
+| `resolve` | 可选。Host 和 SNI 仍用目标 URL，TCP 或 QUIC 改连这里的 IPv4 或另一个主机名。这不是更换 DNS 服务器 |
+| `method` | `GET` 或 `POST` |
+| `body` | 仅 POST。最长 64KB |
+| `referer` / `userAgent` / `cookies` | 可选，各最长 4KB |
+| `maxRedirects` | 0 到 20，不写时是 5。301/302/303 改为 GET 并丢掉正文；307/308 保持方法和正文。最终状态码是最后一跳的 |
+
+目标可以是主机名，也可以是完整的 `http://` 或 `https://` URL。没写端口时，https 用 443，http 用 80。
+
+本机探测不在 Dart 里另写一套 HTTP。桌面和 Android 都把请求交给同一个 Go 程序的 `-mode helper`，一行 JSON 进、一行结果出。环境变量 `NQ_PROBE_HELPER` 可以指向这个程序；不设置时，客户端在自己的可执行文件旁边找 `netquality-reflector`。
+
+## 中心
+
+同一个程序用 `-mode center -center-dir 目录` 当中心，也可以在节点模式上加 `-center-dir`，让一个进程同时提供 `/v1/` 和 `/v1/center/`。中心的控制接口同样要走 HTTPS，不要把明文口令暴露到公网。目录里只保存口令的 `sha256:` 哈希。日志不写口令、密码、Cookie 或请求体。
+
+- `POST /v1/center/login`，正文 `{account, password}`。密码核对通过后返回一个新的会话口令。这个口令不是原来的长期口令，大约 12 小时有效，只返回这一次。
+- `GET /v1/center/catalog`，`Authorization: Bearer` 中心口令。返回这个口令所属组能用的服务器。保密服务器只有 `id`、`name` 和 `confidential: true`，没有控制地址，也没有节点口令。非保密服务器带 `controlUrl` 和一条短期凭证，凭证大约 15 分钟有效，不是节点上的长期口令。
+- `POST /v1/center/servers/{id}/jobs` 以及对应的 `GET .../stream`、`DELETE`。只接受该口令有权使用的服务器。保密节点由中心代为连接，客户端错误里不会出现节点地址。没有权限时返回 403，正文不带那个地址。
+
+节点要接受中心签发的短期凭证，需要配置和中心相同的 `NQ_CENTER_KEY`，以及和服务器文件 `id` 相同的 `NQ_SERVER_ID`。1.1.2 的节点没有这些接口，只能继续手动添加。
 
 ## 例子
 

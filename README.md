@@ -25,7 +25,7 @@
 
 | 路径 | 内容 |
 | --- | --- |
-| `server/` | 同一个 Go 程序。可以只做反射器、只做探测节点，或两个一起开 |
+| `server/` | 同一个 Go 程序。可以只做反射器、只做探测节点、做中心，或节点和中心一起开 |
 | `client/` | Flutter 客户端。Windows、Linux 桌面和 Android |
 | `docs/PROTOCOL.md` | 反射帧、控制接口和各探测类型 |
 | `docs/server-linux.md` | 安装、systemd、防火墙、公开节点和口令节点、HTTPS |
@@ -104,9 +104,21 @@ cd server && go test -race ./...
 cd client && flutter analyze && flutter test
 ```
 
-Android 安装包是按 CPU 分开的 release 包，使用调试证书，只适合测试安装，不是应用商店签名。当前版本名 `1.1.2`，构建号 `5`。
+Android 安装包是按 CPU 分开的 release 包，使用调试证书，只适合测试安装，不是应用商店签名。当前版本名 `1.1.3`，构建号 `6`。应用标识没有改，新的安装包会覆盖原来的「网络质量探测」，不用先卸载。
 
-这一版的说明在 [docs/release-notes/1.1.2.md](docs/release-notes/1.1.2.md)。
+从 1.1.3 起，客户端启动后会检查更新，设置里可以关掉。先问 GitHub Releases，连不上再问 `https://git.yanjiu.ltd/YanJiu/netquality/releases`。1.1.2 没有这个功能，所以 1.1.2 升到 1.1.3 仍然要自己安装。Windows 和 Linux 会把新文件写回当前安装目录。Android 会弹出系统安装确认，这一步不能跳过。没有真正的新版本时，可以用环境变量 `NQ_UPDATE_GITHUB_API` 和 `NQ_UPDATE_GITEA_API` 指向一份同样格式的测试响应。
+
+中心也是这个 Go 程序。示例配置在 [server/example-center](server/example-center)，里面的口令都是占位。本机可以这样看目录：
+
+```bash
+cd server
+go build -o netquality-reflector .
+./netquality-reflector -mode center -center-dir example-center -control-addr 127.0.0.1:8443
+```
+
+客户端点「一键添加服务器」，中心地址填 `http://127.0.0.1:8443`，账号 `lab`，口令 `example-token`。这只适合本机确认功能。真正给别人用时，控制端口要走 HTTPS。
+
+这一版的说明在 [docs/release-notes/1.1.3.md](docs/release-notes/1.1.3.md)。
 
 ## 许可
 

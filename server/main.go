@@ -1,12 +1,14 @@
-// Copyright (C) 2026 灸 言
+// Copyright (C) 2026 言灸
 // SPDX-License-Identifier: AGPL-3.0-only
 
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -19,12 +21,31 @@ import (
 )
 
 func main() {
+	if hashRequested(os.Args[1:]) {
+		if err := printHash(os.Stdin); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	cfg, err := loadConfig(os.Args[1:], os.Environ())
 	if err != nil {
 		if errors.Is(err, errHelp) {
 			os.Exit(0)
 		}
 		log.Fatal(err)
+	}
+	if cfg.CenterKey == "" && cfg.CenterDir != "" {
+		key, err := loadCenterKeyFile(cfg.CenterDir)
+		if err != nil {
+			log.Fatal(err)
+		}
+		cfg.CenterKey = key
+	}
+	if cfg.Mode == "helper" {
+		if err := runHelper(os.Stdin, os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
 	}
 	log.Printf("netquality %s", appVersion)
 	log.Printf("%s", cfg.Summary())
@@ -51,11 +72,27 @@ func main() {
 	}
 
 	var httpSrv *http.Server
+	var node *Node
 	if cfg.Mode == "node" || cfg.Mode == "both" {
-		node := newNode(cfg.NodeToken, cfg.AllowPrivate, extra, defaultLimits())
+		node = newNode(cfg.NodeToken, cfg.AllowPrivate, extra, defaultLimits())
+		node.CenterKey = []byte(cfg.CenterKey)
+		node.ServerID = strings.TrimSpace(cfg.ServerID)
+		if cfg.CenterKey != "" && node.ServerID == "" {
+			log.Printf("设置了中心密钥但没有 NQ_SERVER_ID，将不接受中心签发的短期凭证")
+		}
+	}
+	var center *Center
+	if strings.TrimSpace(cfg.CenterDir) != "" && cfg.Mode != "reflector" {
+		center = newCenter(cfg.CenterDir, cfg.CenterKey)
+		if _, err := center.load(); err != nil {
+			log.Fatalf("中心配置无法读取: %v", err)
+		}
+		log.Printf("center directory %s", cfg.CenterDir)
+	}
+	if node != nil || center != nil {
 		httpSrv = &http.Server{
 			Addr:              cfg.ControlAddr,
-			Handler:           node.Handler(),
+			Handler:           controlHandler(node, center),
 			ReadHeaderTimeout: 5 * time.Second,
 			IdleTimeout:       2 * time.Minute,
 		}
@@ -76,13 +113,16 @@ func main() {
 				errCh <- serveErr
 			}
 		}()
-		if node.Public() && !loopbackHost(cfg.ControlAddr) {
+		if node != nil && node.Public() && !loopbackHost(cfg.ControlAddr) {
 			log.Printf("WARNING: this node is PUBLIC. Anyone who can reach %s can start bounded probes. Set NQ_NODE_TOKEN or -node-token to require a control token. Caps stay on: jobs=%d duration=%s interval>=%s probes/s=%d bandwidth=%dB/s",
 				cfg.ControlAddr, node.Limits.MaxJobs, node.Limits.MaxDuration, node.Limits.MinInterval, node.Limits.MaxProbePerSec, node.Limits.MaxBytesPerSec)
-		} else if node.Public() {
+		} else if node != nil && node.Public() {
 			log.Printf("node is public and bound to loopback; no control token is required")
-		} else {
+		} else if node != nil {
 			log.Printf("node is private; a control token is required and is not logged")
+		}
+		if center != nil {
+			log.Printf("center API is on the control port; use HTTPS before exposing it")
 		}
 		if cfg.AllowPrivate {
 			log.Printf("private and loopback targets are allowed; metadata addresses stay blocked")
@@ -187,6 +227,46 @@ func parseNets(s string) ([]*net.IPNet, error) {
 		out = append(out, n)
 	}
 	return out, nil
+}
+
+func controlHandler(node *Node, center *Center) http.Handler {
+	switch {
+	case node != nil && center == nil:
+		return node.Handler()
+	case node == nil && center != nil:
+		return center.Handler()
+	default:
+		mux := http.NewServeMux()
+		mux.Handle("/v1/center/", center.Handler())
+		mux.Handle("/v1/", node.Handler())
+		return mux
+	}
+}
+
+func hashRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "-hash-secret" || arg == "--hash-secret" {
+			return true
+		}
+	}
+	return false
+}
+
+func printHash(r io.Reader) error {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 1<<20)
+	if !sc.Scan() {
+		if err := sc.Err(); err != nil {
+			return err
+		}
+		return errors.New("请从标准输入传入一行要计算哈希的内容")
+	}
+	line := strings.TrimRight(sc.Text(), "\r")
+	if strings.TrimSpace(line) == "" {
+		return errors.New("内容是空的")
+	}
+	fmt.Println(hashSecret(line))
+	return nil
 }
 
 func loopbackHost(addr string) bool {

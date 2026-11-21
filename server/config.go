@@ -40,6 +40,9 @@ type Config struct {
 	TLSCert      string
 	TLSKey       string
 	Verbose      bool
+	CenterDir    string
+	CenterKey    string
+	ServerID     string
 	LoadedFiles  []string
 }
 
@@ -50,7 +53,7 @@ func (c Config) Summary() string {
 		files = strings.Join(c.LoadedFiles, ", ")
 	}
 	return fmt.Sprintf(
-		"生效配置 mode=%s bind=%s tcp_port=%d udp_port=%d control_addr=%s echo_token=%s node_token=%s allow_private=%t allow_nets=%s tls_cert=%s tls_key=%s verbose=%t 配置文件=%s",
+		"生效配置 mode=%s bind=%s tcp_port=%d udp_port=%d control_addr=%s echo_token=%s node_token=%s allow_private=%t allow_nets=%s tls_cert=%s tls_key=%s verbose=%t center_dir=%s center_key=%s server_id=%s 配置文件=%s",
 		c.Mode,
 		c.Bind,
 		c.TCPPort,
@@ -63,6 +66,9 @@ func (c Config) Summary() string {
 		pathState(c.TLSCert),
 		pathState(c.TLSKey),
 		c.Verbose,
+		pathState(c.CenterDir),
+		secretState(c.CenterKey),
+		emptyState(c.ServerID),
 		files,
 	)
 }
@@ -75,6 +81,13 @@ func secretState(s string) string {
 }
 
 func pathState(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "未设置"
+	}
+	return s
+}
+
+func emptyState(s string) string {
 	if strings.TrimSpace(s) == "" {
 		return "未设置"
 	}
@@ -107,12 +120,15 @@ func loadConfigAt(args []string, environ []string, exeDir, cwd string) (Config, 
 	udpPort := fs.Int("udp-port", defaultUDPPort, "UDP 反射端口，0 表示关闭，对应 NQ_UDP_PORT")
 	token := fs.String("token", "", "回显口令，最长 32 字节，留空不校验，对应 NQ_TOKEN")
 	nodeToken := fs.String("node-token", "", "节点口令，留空则节点公开，对应 NQ_NODE_TOKEN")
-	mode := fs.String("mode", defaultMode, "reflector、node 或 both，对应 NQ_MODE")
+	mode := fs.String("mode", defaultMode, "reflector、node、both、center 或 helper，对应 NQ_MODE")
 	controlAddr := fs.String("control-addr", defaultControlAddr, "节点控制地址，对应 NQ_CONTROL_ADDR")
 	allowPrivate := fs.Bool("allow-private", false, "允许探测本机和局域网，对应 NQ_ALLOW_PRIVATE")
 	allowNets := fs.String("allow-nets", "", "额外允许的网段，逗号分隔，对应 NQ_ALLOW_NETS")
 	tlsCert := fs.String("tls-cert", "", "控制端口证书，对应 NQ_TLS_CERT")
 	tlsKey := fs.String("tls-key", "", "控制端口私钥，对应 NQ_TLS_KEY")
+	centerDir := fs.String("center-dir", "", "中心配置目录，对应 NQ_CENTER_DIR")
+	centerKey := fs.String("center-key", "", "中心短期凭证密钥，对应 NQ_CENTER_KEY。不要把真实密钥写进命令历史")
+	serverID := fs.String("server-id", "", "本节点在中心里的编号，对应 NQ_SERVER_ID")
 	envPath := fs.String("env", "", "额外的 .env 路径，会覆盖其他 .env；文件必须存在")
 	verbose := fs.Bool("v", false, "打印每一包日志，对应 NQ_VERBOSE")
 	fs.Usage = func() {
@@ -121,6 +137,9 @@ func loadConfigAt(args []string, environ []string, exeDir, cwd string) (Config, 
 优先级：命令行参数 > 环境变量 > .env 文件 > 内置默认值。
 启动时读取程序所在目录和当前目录下的 .env（路径相同则只读一次）。
 找不到这些 .env 不会报错。-env 指定的文件必须存在，并覆盖前面的 .env。
+-mode 可以是 reflector、node、both、center 或 helper。
+center 读取 -center-dir。helper 从标准输入读 HTTP 探测，供本机客户端使用。
+-hash-secret 从标准输入读一行，只打印哈希，不启动服务。
 
 `)
 		fs.PrintDefaults()
@@ -152,6 +171,9 @@ func loadConfigAt(args []string, environ []string, exeDir, cwd string) (Config, 
 	cfg.AllowNets = pickString(visited["allow-nets"], *allowNets, "NQ_ALLOW_NETS", real, fileEnv, "")
 	cfg.TLSCert = pickString(visited["tls-cert"], *tlsCert, "NQ_TLS_CERT", real, fileEnv, "")
 	cfg.TLSKey = pickString(visited["tls-key"], *tlsKey, "NQ_TLS_KEY", real, fileEnv, "")
+	cfg.CenterDir = pickString(visited["center-dir"], *centerDir, "NQ_CENTER_DIR", real, fileEnv, "")
+	cfg.CenterKey = pickString(visited["center-key"], *centerKey, "NQ_CENTER_KEY", real, fileEnv, "")
+	cfg.ServerID = pickString(visited["server-id"], *serverID, "NQ_SERVER_ID", real, fileEnv, "")
 
 	tcpRaw := pickString(visited["tcp-port"], strconv.Itoa(*tcpPort), "NQ_TCP_PORT", real, fileEnv, strconv.Itoa(defaultTCPPort))
 	udpRaw := pickString(visited["udp-port"], strconv.Itoa(*udpPort), "NQ_UDP_PORT", real, fileEnv, strconv.Itoa(defaultUDPPort))
@@ -195,9 +217,12 @@ func pickString(fromFlag bool, flagVal, envKey string, real, file map[string]str
 
 func (c Config) validate() error {
 	switch c.Mode {
-	case "reflector", "node", "both":
+	case "reflector", "node", "both", "center", "helper":
 	default:
-		return fmt.Errorf("NQ_MODE 必须是 reflector、node 或 both，当前是 %q", c.Mode)
+		return fmt.Errorf("NQ_MODE 必须是 reflector、node、both、center 或 helper，当前是 %q", c.Mode)
+	}
+	if c.Mode == "center" && strings.TrimSpace(c.CenterDir) == "" {
+		return fmt.Errorf("中心模式需要 NQ_CENTER_DIR 或 -center-dir")
 	}
 	if c.TCPPort < 0 || c.TCPPort > 65535 || c.UDPPort < 0 || c.UDPPort > 65535 {
 		return fmt.Errorf("端口必须在 0 到 65535 之间")
@@ -337,6 +362,9 @@ var knownEnvKeys = map[string]struct{}{
 	"NQ_TLS_CERT":      {},
 	"NQ_TLS_KEY":       {},
 	"NQ_VERBOSE":       {},
+	"NQ_CENTER_DIR":    {},
+	"NQ_CENTER_KEY":    {},
+	"NQ_SERVER_ID":     {},
 }
 
 func parseDotEnv(r io.Reader) (map[string]string, error) {

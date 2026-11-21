@@ -157,7 +157,7 @@ func TestConfigValidation(t *testing.T) {
 
 func TestSummaryMasksTokens(t *testing.T) {
 	dir := t.TempDir()
-	mustWrite(t, filepath.Join(dir, ".env"), "NQ_TOKEN=super-secret-echo\nNQ_NODE_TOKEN=super-secret-node\nNQ_MODE=both\n")
+	mustWrite(t, filepath.Join(dir, ".env"), "NQ_TOKEN=super-secret-echo\nNQ_NODE_TOKEN=super-secret-node\nNQ_CENTER_KEY=super-secret-center\nNQ_MODE=both\n")
 	cfg, err := loadConfigAt(nil, nil, dir, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -166,7 +166,7 @@ func TestSummaryMasksTokens(t *testing.T) {
 	if strings.Contains(line, "super-secret") {
 		t.Fatal(line)
 	}
-	if !strings.Contains(line, "echo_token=已设置") || !strings.Contains(line, "node_token=已设置") {
+	if !strings.Contains(line, "echo_token=已设置") || !strings.Contains(line, "node_token=已设置") || !strings.Contains(line, "center_key=已设置") {
 		t.Fatal(line)
 	}
 	plain, err := loadConfigAt(nil, nil, t.TempDir(), t.TempDir())

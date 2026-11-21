@@ -101,3 +101,5 @@ class FileTokenVault implements TokenVault {
 const echoTokenKey = 'target-echo-token';
 
 String nodeTokenKey(String nodeId) => 'node-token.$nodeId';
+
+String centerTokenKey(String centerId) => 'center-token.$centerId';

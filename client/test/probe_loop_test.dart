@@ -321,6 +321,74 @@ void main() {
       everyElement('127.0.0.1'),
     );
   });
+
+  test('a closed address family is not used after lookup', () async {
+    final echo = await RawDatagramSocket.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(echo.close);
+    echo.listen((event) {
+      if (event != RawSocketEvent.read) {
+        return;
+      }
+      final datagram = echo.receive();
+      if (datagram == null) {
+        return;
+      }
+      echo.send(datagram.data, datagram.address, datagram.port);
+    });
+    final samples = await _collect(
+      ProbeRequest(
+        host: 'example.test',
+        port: echo.port,
+        profileId: 'udp-generic',
+        interval: const Duration(milliseconds: 40),
+        timeout: const Duration(milliseconds: 300),
+        packetSize: 16,
+        echoToken: '',
+        dnsName: '',
+        payloadHex: '',
+        expectHex: '',
+        allowIPv6: false,
+      ),
+      count: 1,
+      loop: ProbeLoop(
+        lookup: (_) async => [
+          InternetAddress('2001:db8::1'),
+          InternetAddress('127.0.0.1'),
+        ],
+      ),
+    );
+    expect(samples.single.status, Outcome.ok);
+    expect(samples.single.detail['address'], '127.0.0.1');
+  });
+
+  test('local http uses the same go engine as the node', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) {
+      request.response.statusCode = 204;
+      request.response.close();
+    });
+    final samples = await _collect(
+      ProbeRequest(
+        host: 'http://127.0.0.1:${server.port}/health',
+        port: server.port,
+        profileId: 'http',
+        interval: const Duration(milliseconds: 200),
+        timeout: const Duration(seconds: 3),
+        packetSize: 64,
+        echoToken: '',
+        dnsName: '',
+        payloadHex: '',
+        expectHex: '',
+      ),
+      count: 1,
+      loop: ProbeLoop(helperPath: binary),
+    );
+    expect(samples.single.status, Outcome.ok);
+    expect(samples.single.detail['statusCode'], '204');
+    expect(samples.single.detail['httpVersion'], '1.1');
+    expect(samples.single.summary.failurePct, 0);
+  });
 }
 
 Future<List<ProbeSample>> _collect(

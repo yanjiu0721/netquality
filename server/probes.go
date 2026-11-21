@@ -38,6 +38,8 @@ func newProber(spec jobSpec) (prober, error) {
 		return &mcJava{spec: spec}, nil
 	case "minecraft-bedrock":
 		return &mcBedrock{spec: spec}, nil
+	case "http":
+		return &httpProbe{spec: spec}, nil
 	default:
 		return nil, fmt.Errorf("unknown profile %q", spec.Profile)
 	}

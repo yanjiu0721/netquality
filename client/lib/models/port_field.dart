@@ -23,9 +23,20 @@ String portHint(ProbeProfile profile) {
       return '合作反射 TCP 默认 19090';
     case 'nq-udp':
       return '合作反射 UDP 默认 19091';
+    case 'http':
+      return 'HTTP 默认 443（https）或 80（http）';
     default:
       return '${profile.label} 默认 ${profile.port}';
   }
+}
+
+/// Default port for an HTTP target. A full http:// URL uses 80. Anything else uses 443.
+int httpDefaultPort(String target) {
+  final text = target.trim().toLowerCase();
+  if (text.startsWith('http://')) {
+    return 80;
+  }
+  return 443;
 }
 
 const portHelperText =

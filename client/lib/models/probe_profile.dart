@@ -64,6 +64,14 @@ class ProbeProfile {
     blurb: '发送 RakNet Unconnected Ping，校验 magic 和原时间戳。',
     rateLabel: '无应答（未知）',
   );
+  static const http = ProbeProfile(
+    id: 'http',
+    label: 'HTTP',
+    port: 443,
+    blurb:
+        '按 HTTP 请求测量。默认优先 HTTP/2，服务器不支持时降到 HTTP/1.1。强制的版本不支持就失败，不会偷偷降级。4xx 和 5xx 会显示状态码，不算丢包。',
+    rateLabel: '失败率',
+  );
   static const customUdp = ProbeProfile(
     id: 'custom-udp',
     label: '自定义 UDP',
@@ -81,6 +89,7 @@ class ProbeProfile {
     minecraftJava,
     minecraftBedrock,
     customUdp,
+    http,
   ];
 
   static ProbeProfile byId(String id) {

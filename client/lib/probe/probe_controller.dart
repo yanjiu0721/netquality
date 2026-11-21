@@ -259,11 +259,36 @@ class ProbeController extends ChangeNotifier {
       bool cancelled() => generation != _token;
       try {
         if (config.remote) {
+          final selected = config.node!;
+          var baseUrl = selected.baseUrl;
+          var token = nodeToken;
+          if (selected.confidential) {
+            final link = config.centerLink(selected.centerLinkId);
+            if (link == null) {
+              throw RemoteException('找不到签发这台服务器的中心');
+            }
+            baseUrl = link.url;
+            token = nodeToken;
+          }
+          if (config.profileId == 'http' || !config.allowIPv4 || !config.allowIPv6) {
+            if (!selected.confidential) {
+              final info = await fetchNodeInfo(baseUrl);
+              final upgrade = remoteUpgradeMessage(
+                info,
+                profileId: config.profileId,
+                allow4: config.allowIPv4,
+                allow6: config.allowIPv6,
+              );
+              if (upgrade != null) {
+                throw RemoteException(upgrade);
+              }
+            }
+          }
           final remote = RemoteProbe();
           _remote = remote;
           await remote.run(
-            baseUrl: config.node!.baseUrl,
-            nodeToken: nodeToken,
+            baseUrl: baseUrl,
+            nodeToken: token,
             body: ProbeBody(
               target: config.host.trim(),
               port: config.port,
@@ -276,7 +301,11 @@ class ProbeController extends ChangeNotifier {
               dnsName: config.dnsName.trim(),
               payloadHex: config.payloadHex.trim(),
               expectHex: config.expectHex.trim(),
+              allowIPv4: config.allowIPv4,
+              allowIPv6: config.allowIPv6,
+              http: config.profileId == 'http' ? _httpJson(config) : null,
             ),
+            jobsPath: _jobsPath(config),
             onSample: (sample) => _accept(generation, sample),
             onResolved: (resolved) {
               if (generation != _token) {
@@ -328,6 +357,16 @@ class ProbeController extends ChangeNotifier {
               dnsName: config.dnsName.trim(),
               payloadHex: config.payloadHex.trim(),
               expectHex: config.expectHex.trim(),
+              allowIPv4: config.allowIPv4,
+              allowIPv6: config.allowIPv6,
+              httpVersion: config.httpVersion,
+              httpResolve: config.httpResolve.trim(),
+              httpMethod: config.httpMethod,
+              httpBody: config.httpBody,
+              httpReferer: config.httpReferer,
+              httpUserAgent: config.httpUserAgent,
+              httpCookies: config.httpCookies,
+              httpMaxRedirects: config.httpMaxRedirects,
             ),
             onSample: (sample) => _accept(generation, sample),
             cancelled: cancelled,
@@ -489,6 +528,25 @@ class ProbeController extends ChangeNotifier {
     _tick?.cancel();
     super.dispose();
   }
+}
+
+Map<String, Object?> _httpJson(SessionConfig config) => {
+  'version': config.httpVersion,
+  'resolve': config.httpResolve.trim(),
+  'method': config.httpMethod,
+  'body': config.httpBody,
+  'referer': config.httpReferer,
+  'userAgent': config.httpUserAgent,
+  'cookies': config.httpCookies,
+  'maxRedirects': config.httpMaxRedirects,
+};
+
+String _jobsPath(SessionConfig config) {
+  final node = config.node;
+  if (node != null && node.confidential && node.serverId.isNotEmpty) {
+    return '/v1/center/servers/${node.serverId}/jobs';
+  }
+  return '/v1/jobs';
 }
 
 String? _echoProblem(String profileId, String echoToken) {

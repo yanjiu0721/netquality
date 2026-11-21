@@ -6,6 +6,7 @@
 
 - **反射**：把探测包原样送回去。手机直接测到这台机器的延迟。
 - **节点**：手机只下指令。这台机器替手机去测别的地址，例如游戏服务器。
+- **中心**：一个配置目录里放用户组、口令哈希和探测节点。手机填一次中心口令，就能加入这个口令能用的全部节点。说明和示例在仓库的 `example-center/`，以及 `docs/server-linux.md`。
 
 压缩包里已经有一份能直接用的 `.env`，默认端口和以前一样：TCP `19090`、UDP `19091`。不改也能用。
 
@@ -110,7 +111,7 @@ sudo firewall-cmd --reload
 
 ```bash
 sudo mkdir -p /opt/netquality
-sudo tar -C /opt/netquality --strip-components=1 -xzf netquality-server-1.1.2-linux-amd64.tar.gz
+sudo tar -C /opt/netquality --strip-components=1 -xzf netquality-server-1.1.3-linux-amd64.tar.gz
 sudo chmod 755 /opt/netquality/netquality-reflector
 sudo cp /opt/netquality/netquality.service /etc/systemd/system/netquality.service
 sudo systemctl daemon-reload

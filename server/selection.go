@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const appVersion = "1.1.2"
+const appVersion = "1.1.3"
 
 // dialState is shared by the job runner and the prober. Both hold a copy of
 // jobSpec, so the mutable address choice has to live behind a pointer.

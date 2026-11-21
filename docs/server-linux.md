@@ -63,7 +63,7 @@ ss -lunp | grep 19091
 
 ```bash
 sudo mkdir -p /opt/netquality
-sudo tar -C /opt/netquality --strip-components=1 -xzf netquality-server-1.1.2-linux-amd64.tar.gz
+sudo tar -C /opt/netquality --strip-components=1 -xzf netquality-server-1.1.3-linux-amd64.tar.gz
 sudo cp /opt/netquality/netquality.service /etc/systemd/system/netquality.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now netquality
@@ -191,6 +191,43 @@ probe.example {
 3. 节点口令：私有节点填写，公开节点留空。可以点「检查」，看到「公开」或「需要口令」。
 4. 目标地址、端口、类型另填。例如 Minecraft Java 用游戏域名和 `25565`。
 5. 点「开始探测」。延迟是节点到目标的时间。停止后节点会结束任务。
+
+## 7. 把同一程序当成中心
+
+中心用来一次下发一批探测节点。它不是另一个软件。配置放在一个目录里：
+
+- `groups.json`：用户组
+- `tokens.json`：口令和密码的 `sha256:` 哈希，不写原文
+- `servers/*.json`：中心分配的显示名、节点控制地址、哪些组可以用、是否保密。节点的长期口令只写在这里
+- `center.key`：签发短期凭证的密钥。第一行非注释内容就是密钥
+
+生成哈希时，原文从标准输入读，不会出现在命令行参数里：
+
+```bash
+printf '%s' '换成你自己的口令' | ./netquality-reflector -hash-secret
+```
+
+把打印出来的 `sha256:` 开头那一行写进 `tokens.json`。示例目录在仓库的 `server/example-center`，口令都是占位，不要拿到公网上用。
+
+```bash
+sudo mkdir -p /etc/netquality/center
+sudo cp -a server/example-center/. /etc/netquality/center/
+# 换成自己的哈希、地址和 center.key 以后再启动
+./netquality-reflector -mode center -center-dir /etc/netquality/center -control-addr 127.0.0.1:8443
+```
+
+对应的环境变量是 `NQ_MODE=center`、`NQ_CENTER_DIR`、`NQ_CENTER_KEY`。节点要认中心签发的短期凭证时，再设 `NQ_SERVER_ID`，值和该节点在中心服务器文件里的 `id` 相同，`NQ_CENTER_KEY` 和中心的密钥相同。
+
+控制接口会带中心口令，公网必须走 HTTPS，和节点控制端口一样。可以用程序自己的 `-tls-cert` / `-tls-key`，也可以用 Caddy 或 nginx 反代到 `127.0.0.1:8443`。防火墙和安全组只放行 443。
+
+```bash
+sudo firewall-cmd --permanent --add-port=443/tcp
+sudo firewall-cmd --reload
+```
+
+systemd 示例是 `deploy/netquality-center.service`。`ProtectSystem=strict` 仍然能读你在服务文件里用 `ReadOnlyPaths` 放行的配置目录。不要把真实口令写进服务文件。
+
+1.1.2 的节点还能在客户端里手动添加。要当中心，或者要当中心下发的节点，需要 1.1.3 的服务端。
 
 ## 本机演示补充
 
