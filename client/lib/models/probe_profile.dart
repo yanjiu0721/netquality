@@ -68,8 +68,7 @@ class ProbeProfile {
     id: 'http',
     label: 'HTTP',
     port: 443,
-    blurb:
-        '按 HTTP 请求测量。默认优先 HTTP/2，服务器不支持时降到 HTTP/1.1。强制的版本不支持就失败，不会偷偷降级。4xx 和 5xx 会显示状态码，不算丢包。',
+    blurb: '按 HTTP 请求测量。目标填完整网址；只填主机名或 IP 时按 http，端口 80。默认优先 HTTP/2，服务器不支持时降到 HTTP/1.1。强制的版本不支持就失败，不会偷偷降级。4xx 和 5xx 会显示状态码，不算丢包。',
     rateLabel: '失败率',
   );
   static const customUdp = ProbeProfile(

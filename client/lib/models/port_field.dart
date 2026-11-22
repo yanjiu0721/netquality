@@ -23,20 +23,29 @@ String portHint(ProbeProfile profile) {
       return '合作反射 TCP 默认 19090';
     case 'nq-udp':
       return '合作反射 UDP 默认 19091';
-    case 'http':
-      return 'HTTP 默认 443（https）或 80（http）';
     default:
       return '${profile.label} 默认 ${profile.port}';
   }
 }
 
-/// Default port for an HTTP target. A full http:// URL uses 80. Anything else uses 443.
-int httpDefaultPort(String target) {
-  final text = target.trim().toLowerCase();
-  if (text.startsWith('http://')) {
-    return 80;
+const nonHttpTimeoutMs = 1000;
+const httpTimeoutMs = 5000;
+
+int timeoutDefaultFor(String profileId) =>
+    profileId == 'http' ? httpTimeoutMs : nonHttpTimeoutMs;
+
+/// An empty timeout, or one that is still the previous profile's default,
+/// follows the newly selected profile. A value the user typed stays.
+String timeoutAfterProfileChange({
+  required String current,
+  required int previousDefault,
+  required int nextDefault,
+}) {
+  final trimmed = current.trim();
+  if (trimmed.isEmpty || int.tryParse(trimmed) == previousDefault) {
+    return '$nextDefault';
   }
-  return 443;
+  return current;
 }
 
 const portHelperText =

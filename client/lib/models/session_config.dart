@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import '../protocol/probe_packet.dart';
+import 'http_target.dart';
 import 'ip_family.dart';
 import 'probe_profile.dart';
 
@@ -66,7 +67,9 @@ class RemoteNode {
       baseUrl: confidential
           ? ''
           : (json['baseUrl'] is String ? json['baseUrl'] as String : ''),
-      visibility: json['visibility'] is String ? json['visibility'] as String : '',
+      visibility: json['visibility'] is String
+          ? json['visibility'] as String
+          : '',
       fromCenter: json['fromCenter'] == true,
       confidential: confidential,
       centerLinkId: json['centerLinkId'] is String
@@ -88,11 +91,7 @@ class CenterLink {
   final String url;
   final String account;
 
-  Map<String, Object?> toJson() => {
-    'id': id,
-    'url': url,
-    'account': account,
-  };
+  Map<String, Object?> toJson() => {'id': id, 'url': url, 'account': account};
 
   factory CenterLink.fromJson(Map<String, dynamic> json) {
     return CenterLink(
@@ -185,6 +184,10 @@ class SessionConfig {
 
   ProbeProfile get profile => ProbeProfile.byId(profileId);
 
+  /// Parsed HTTP target. Null for other profiles, or when the text is invalid.
+  HttpTarget? get httpTarget =>
+      profileId == 'http' ? parseHttpTarget(host) : null;
+
   RemoteNode? get node {
     for (final item in nodes) {
       if (item.id == nodeId) {
@@ -195,7 +198,15 @@ class SessionConfig {
   }
 
   String? validate() {
-    final family = familyRefusal(host, v4: allowIPv4, v6: allowIPv6);
+    final http = profileId == 'http' ? readHttpTarget(host) : null;
+    if (http != null && http.error != null) {
+      return http.error;
+    }
+    final family = familyRefusal(
+      http?.target?.host ?? host,
+      v4: allowIPv4,
+      v6: allowIPv6,
+    );
     if (family != null) {
       return family;
     }
@@ -209,7 +220,7 @@ class SessionConfig {
         return resolveFamily.replaceFirst('目标', '指定解析');
       }
     }
-    if (host.trim().isEmpty) {
+    if (profileId != 'http' && host.trim().isEmpty) {
       return '请填写目标地址';
     }
     if (profileId == 'http') {
@@ -224,8 +235,7 @@ class SessionConfig {
       if (!versions.contains(httpVersion)) {
         return 'HTTP 版本需要是自动、1.1、2 或 3';
       }
-    }
-    if (port < 1 || port > 65535) {
+    } else if (port < 1 || port > 65535) {
       return '端口需要在 1 到 65535 之间';
     }
     final minInterval = remote ? 200 : 100;
@@ -333,11 +343,15 @@ class SessionConfig {
       dnsName: json['dnsName'] is String
           ? json['dnsName'] as String
           : defaults.dnsName,
-      payloadHex: json['payloadHex'] is String ? json['payloadHex'] as String : '',
+      payloadHex: json['payloadHex'] is String
+          ? json['payloadHex'] as String
+          : '',
       expectHex: json['expectHex'] is String ? json['expectHex'] as String : '',
       allowIPv4: json['allowIPv4'] is bool ? json['allowIPv4'] as bool : true,
       allowIPv6: json['allowIPv6'] is bool ? json['allowIPv6'] as bool : true,
-      autoUpdate: json['autoUpdate'] is bool ? json['autoUpdate'] as bool : true,
+      autoUpdate: json['autoUpdate'] is bool
+          ? json['autoUpdate'] as bool
+          : true,
       httpVersion: json['httpVersion'] is String
           ? json['httpVersion'] as String
           : 'auto',

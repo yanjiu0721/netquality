@@ -34,11 +34,14 @@ class TargetEntry {
   }
 
   String get label {
-    final where = httpUrl.trim().isNotEmpty ? httpUrl.trim() : host.trim();
-    final methodText = profileId == 'http' && method.trim().isNotEmpty
-        ? ' ${method.trim().toUpperCase()}'
-        : '';
-    return '$where:$port · $profileId$methodText';
+    if (profileId == 'http') {
+      final where = httpUrl.trim().isNotEmpty ? httpUrl.trim() : host.trim();
+      final methodText = method.trim().isNotEmpty
+          ? ' ${method.trim().toUpperCase()}'
+          : '';
+      return '$where · HTTP$methodText';
+    }
+    return '${host.trim()}:$port · $profileId';
   }
 
   Map<String, Object?> toJson() => {
@@ -94,7 +97,8 @@ class TargetHistory {
 
   TargetHistory clear() => empty;
 
-  String encode() => jsonEncode(entries.map((entry) => entry.toJson()).toList());
+  String encode() =>
+      jsonEncode(entries.map((entry) => entry.toJson()).toList());
 
   factory TargetHistory.decode(String raw) {
     if (raw.trim().isEmpty) {

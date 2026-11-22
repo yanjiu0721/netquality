@@ -11,6 +11,7 @@ import '../models/probe_profile.dart';
 import '../models/session_config.dart';
 import '../ui/address_text.dart';
 import 'endpoint_picker.dart';
+import 'http_helper.dart';
 import 'probe_loop.dart';
 import 'remote_client.dart';
 
@@ -226,6 +227,13 @@ class ProbeController extends ChangeNotifier {
         notifyListeners();
         return;
       }
+      if (!config.remote && config.profileId == 'http') {
+        final helperProblem = await localHttpBlockedReason();
+        if (helperProblem != null) {
+          _rejectSetup(helperProblem);
+          return;
+        }
+      }
       await stop();
       _nodeToken = nodeToken;
       _remoteMode = config.remote;
@@ -237,6 +245,9 @@ class ProbeController extends ChangeNotifier {
         ..start();
       final source = config.remote ? (config.node?.name ?? '远程节点') : '本机';
       final profile = ProbeProfile.byId(config.profileId);
+      final httpTarget = config.httpTarget;
+      final target = httpTarget?.url ?? config.host.trim();
+      final port = httpTarget?.port ?? config.port;
       view = ProbeView(
         running: true,
         phase: '探测中',
@@ -250,7 +261,7 @@ class ProbeController extends ChangeNotifier {
         sessionId: session,
         profileId: config.profileId,
         elapsed: Duration.zero,
-        targetHost: '${config.host.trim()}:${config.port}',
+        targetHost: httpTarget?.url ?? '$target:$port',
         profileLabel: profile.label,
         startedAt: _startedAt,
       );
@@ -270,7 +281,9 @@ class ProbeController extends ChangeNotifier {
             baseUrl = link.url;
             token = nodeToken;
           }
-          if (config.profileId == 'http' || !config.allowIPv4 || !config.allowIPv6) {
+          if (config.profileId == 'http' ||
+              !config.allowIPv4 ||
+              !config.allowIPv6) {
             if (!selected.confidential) {
               final info = await fetchNodeInfo(baseUrl);
               final upgrade = remoteUpgradeMessage(
@@ -290,8 +303,8 @@ class ProbeController extends ChangeNotifier {
             baseUrl: baseUrl,
             nodeToken: token,
             body: ProbeBody(
-              target: config.host.trim(),
-              port: config.port,
+              target: target,
+              port: port,
               profile: config.profileId,
               intervalMs: config.intervalMs,
               timeoutMs: config.timeoutMs,
@@ -347,8 +360,8 @@ class ProbeController extends ChangeNotifier {
           _local = loop;
           await loop.run(
             request: ProbeRequest(
-              host: config.host.trim(),
-              port: config.port,
+              host: target,
+              port: port,
               profileId: config.profileId,
               interval: Duration(milliseconds: config.intervalMs),
               timeout: Duration(milliseconds: config.timeoutMs),
@@ -373,6 +386,8 @@ class ProbeController extends ChangeNotifier {
           );
         }
         _finish(generation, '已停止');
+      } on LocalHttpHelperException catch (error) {
+        _rejectSetup(error.message, generation: generation);
       } on RemoteException catch (error) {
         _finish(generation, '出错', banner: error.message);
       } on Object {
@@ -414,6 +429,27 @@ class ProbeController extends ChangeNotifier {
       );
       notifyListeners();
     }
+  }
+
+  void _rejectSetup(String message, {int? generation}) {
+    if (generation != null && generation != _token) {
+      return;
+    }
+    _clock.stop();
+    _tick?.cancel();
+    view = view.copyWith(
+      running: false,
+      phase: '无法开始',
+      banner: message,
+      note: '',
+      detail: const {},
+      summary: ProbeSummary.empty,
+      samples: const [],
+      elapsed: Duration.zero,
+      clearReport: true,
+      clearTrying: true,
+    );
+    notifyListeners();
   }
 
   void _finish(int generation, String phase, {String? banner}) {

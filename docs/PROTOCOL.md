@@ -85,9 +85,9 @@
 | `referer` / `userAgent` / `cookies` | 可选，各最长 4KB |
 | `maxRedirects` | 0 到 20，不写时是 5。301/302/303 改为 GET 并丢掉正文；307/308 保持方法和正文。最终状态码是最后一跳的 |
 
-目标可以是主机名，也可以是完整的 `http://` 或 `https://` URL。没写端口时，https 用 443，http 用 80。
+目标可以是主机名，也可以是完整的 `http://` 或 `https://` URL（可带端口、路径和查询）。没有写协议时按 `http`。没有写端口时，http 用 80，https 用 443。URL 里已经写了端口就用那个端口。请求里的 `port` 可以省略或写 0；如果 URL 自己没有端口，而 `port` 仍是 1 到 65535，就用这个 `port`，以便旧客户端继续工作。非 HTTP 类型仍然必须带 1 到 65535 的端口。
 
-本机探测不在 Dart 里另写一套 HTTP。桌面和 Android 都把请求交给同一个 Go 程序的 `-mode helper`，一行 JSON 进、一行结果出。环境变量 `NQ_PROBE_HELPER` 可以指向这个程序；不设置时，客户端在自己的可执行文件旁边找 `netquality-reflector`。
+本机探测不在 Dart 里另写一套 HTTP。桌面和 Android 都把请求交给同一个 Go 程序的 `-mode helper`，一行 JSON 进、一行结果出。环境变量 `NQ_PROBE_HELPER` 可以指向这个程序；不设置时，客户端在自己的可执行文件旁边找 `netquality-reflector`。找不到或启动不了时，本机 HTTP 立刻失败并说明原因，建议改用远程节点，不会记成一次全部失败的探测。Android 安装包不包含这个程序。
 
 ## 中心
 

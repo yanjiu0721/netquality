@@ -173,9 +173,9 @@ func probeHTTP(ctx context.Context, in HTTPInput) Outcome {
 }
 
 type httpHop struct {
-	dns     time.Duration
-	connect time.Duration
-	tls     time.Duration
+	dns      time.Duration
+	connect  time.Duration
+	tls      time.Duration
 	ttfb     time.Duration
 	addr     net.IP
 	version  string
@@ -460,10 +460,7 @@ func buildHTTPURL(target string, port int) (*url.URL, error) {
 	}
 	raw := target
 	if !strings.Contains(raw, "://") {
-		scheme := "https"
-		if port == 80 {
-			scheme = "http"
-		}
+		// A bare host or IP is HTTP on port 80 unless the text itself has a port.
 		hostpart := raw
 		path := ""
 		if i := strings.Index(raw, "/"); i >= 0 {
@@ -472,17 +469,30 @@ func buildHTTPURL(target string, port int) (*url.URL, error) {
 		if strings.Count(hostpart, ":") >= 2 && !strings.HasPrefix(hostpart, "[") {
 			hostpart = "[" + hostpart + "]"
 		}
-		raw = scheme + "://" + hostpart + path
+		raw = "http://" + hostpart + path
 	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return nil, errors.New("HTTP 目标需要是主机名或 http/https 网址")
 	}
 	if u.Port() == "" {
-		if port < 1 || port > 65535 {
+		use := port
+		if use == 0 {
+			if u.Scheme == "https" {
+				use = 443
+			} else {
+				use = 80
+			}
+		}
+		if use < 1 || use > 65535 {
 			return nil, errors.New("端口需要在 1 到 65535 之间")
 		}
-		u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(port))
+		u.Host = net.JoinHostPort(u.Hostname(), strconv.Itoa(use))
+	} else {
+		parsed, err := strconv.Atoi(u.Port())
+		if err != nil || parsed < 1 || parsed > 65535 {
+			return nil, errors.New("端口需要在 1 到 65535 之间")
+		}
 	}
 	if u.Path == "" {
 		u.Path = "/"

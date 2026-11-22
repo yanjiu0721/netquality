@@ -7,9 +7,32 @@ import 'dart:io';
 import '../metrics/sample_book.dart';
 
 const helperMissingNote =
-    '本机 HTTP 探测使用和节点相同的 Go 引擎。请把 netquality-reflector 放在程序旁边，或设置环境变量 NQ_PROBE_HELPER。远程节点不受影响。';
+    '本机 HTTP 探测需要 Go 程序 netquality-reflector，现在没有找到，所以探测没有开始。请把探测来源改成「远程节点」。桌面端也可以把 netquality-reflector 放在程序旁边，或设置环境变量 NQ_PROBE_HELPER。';
+
+const helperStartFailedNote =
+    '本机 HTTP 探测找到了 netquality-reflector，但没有启动成功，所以探测没有开始。请把探测来源改成「远程节点」。桌面端也可以检查这个程序能否运行，或改用环境变量 NQ_PROBE_HELPER。';
+
+/// Thrown before any sample is recorded when the local HTTP engine cannot run.
+class LocalHttpHelperException implements Exception {
+  const LocalHttpHelperException(this.message);
+
+  final String message;
+}
+
+bool isLocalHttpHelperFailure(Outcome outcome) {
+  return outcome.status == Outcome.error &&
+      (outcome.note == helperMissingNote ||
+          outcome.note == helperStartFailedNote);
+}
+
+/// Tests set this to skip the search next to the executable.
+String? Function()? locateProbeHelperOverride;
 
 String? locateProbeHelper() {
+  final override = locateProbeHelperOverride;
+  if (override != null) {
+    return override();
+  }
   final env = Platform.environment['NQ_PROBE_HELPER'];
   if (env != null && env.isNotEmpty && File(env).existsSync()) {
     return env;
@@ -25,6 +48,23 @@ String? locateProbeHelper() {
     }
   }
   return null;
+}
+
+/// Null when the local Go helper can be started. Otherwise a Chinese reason
+/// that already tells the user to switch the source to a remote node.
+Future<String?> localHttpBlockedReason({String? binary}) async {
+  final path = binary ?? locateProbeHelper();
+  if (path == null || path.isEmpty || !File(path).existsSync()) {
+    return helperMissingNote;
+  }
+  try {
+    final process = await Process.start(path, const ['-mode', 'helper']);
+    process.kill();
+    process.exitCode.ignore();
+    return null;
+  } catch (_) {
+    return helperStartFailedNote;
+  }
 }
 
 Outcome outcomeFromHelper(String line) {
@@ -107,14 +147,23 @@ class HttpHelperSession {
       return null;
     }
     final path = binary ?? locateProbeHelper();
-    if (path == null) {
+    if (path == null || path.isEmpty || !File(path).existsSync()) {
       return const Outcome(
         status: Outcome.error,
         kind: Outcome.query,
         note: helperMissingNote,
       );
     }
-    final process = await Process.start(path, const ['-mode', 'helper']);
+    final Process process;
+    try {
+      process = await Process.start(path, const ['-mode', 'helper']);
+    } catch (_) {
+      return const Outcome(
+        status: Outcome.error,
+        kind: Outcome.query,
+        note: helperStartFailedNote,
+      );
+    }
     _process = process;
     process.stdout
         .transform(utf8.decoder)
