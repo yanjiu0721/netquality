@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../center/catalog.dart';
 import '../center/center_client.dart';
 import '../models/session_config.dart';
+import 'expandable_hint.dart';
 
 class AddedCenter {
   const AddedCenter({
@@ -140,9 +141,10 @@ class _CenterAddDialogState extends State<_CenterAddDialog> {
               obscureText: true,
               decoration: const InputDecoration(
                 labelText: '密码',
-                hintText: '中心要求密码、手里还没有口令时填写',
+                hintText: '还没有口令时填写',
               ),
             ),
+            const ExpandableHint(text: '中心要求密码、手里还没有口令时填写。'),
             if (_hint != null) ...[
               const SizedBox(height: 8),
               Text(_hint!, style: const TextStyle(color: Color(0xFF9A3412))),

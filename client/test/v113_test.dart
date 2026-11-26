@@ -50,6 +50,7 @@ void main() {
   test('github failure falls through to the spare source', () async {
     final check = await findUpdate(
       current: '1.1.3',
+      preferred: UpdateSource.github,
       endpoints: const UpdateEndpoints(
         github: 'https://github.invalid/latest',
         gitea: 'https://git.invalid/latest',
@@ -68,6 +69,10 @@ void main() {
       },
     );
     expect(check.offer?.version, '1.1.9');
+    expect(check.used, UpdateSource.gitea);
+    expect(check.fellBack, isTrue);
+    expect(check.message, contains('GitHub'));
+    expect(check.message, contains('YanJiu Git'));
   });
 
   test('history keeps the newest identical target and can delete or clear', () {

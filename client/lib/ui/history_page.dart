@@ -4,11 +4,65 @@
 import 'package:flutter/material.dart';
 
 import '../content/release_history.dart';
+import '../update/apply_update.dart';
+import '../update/release_feed.dart';
+import '../update/update_check.dart';
 import '../version.dart';
 import 'quality_charts.dart';
 
-class HistoryPage extends StatelessWidget {
-  const HistoryPage({super.key});
+class HistoryPage extends StatefulWidget {
+  const HistoryPage({super.key, this.updateSource = UpdateSource.gitea});
+
+  final UpdateSource updateSource;
+
+  @override
+  State<HistoryPage> createState() => _HistoryPageState();
+}
+
+class _HistoryPageState extends State<HistoryPage> {
+  var _entries = const <ReleaseEntry>[];
+  var _note = '正在读取发布说明…';
+  var _showBundledNote = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final cached = await readStoredReleaseHistory();
+    if (!mounted) {
+      return;
+    }
+    if (cached != null) {
+      setState(() {
+        _entries = cached.entries;
+        _note = '正在向${updateSourceLabel(widget.updateSource)}核对发布说明…';
+        _showBundledNote = false;
+      });
+    }
+    try {
+      final result = await loadReleaseHistory(widget.updateSource);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _entries = result.entries;
+        _note = result.note;
+        _showBundledNote = result.origin == HistoryOrigin.bundled;
+      });
+    } on Object {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _entries = releaseHistory;
+        _note = staleHistoryNote(rateLimited: false, hasCache: false);
+        _showBundledNote = true;
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -39,12 +93,25 @@ class HistoryPage extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 8),
+                if (_note.isNotEmpty)
+                  Text(
+                    _note,
+                    style: const TextStyle(color: muted, height: 1.4),
+                  ),
+                const SizedBox(height: 8),
                 const Text(
-                  releaseHistoryNote,
+                  onlineHistoryLimitNote,
                   style: TextStyle(color: muted, height: 1.4),
                 ),
+                if (_showBundledNote) ...[
+                  const SizedBox(height: 8),
+                  const Text(
+                    releaseHistoryNote,
+                    style: TextStyle(color: muted, height: 1.4),
+                  ),
+                ],
                 const SizedBox(height: 12),
-                for (final entry in releaseHistory) _entry(entry),
+                for (final entry in _entries) _entry(entry),
               ],
             ),
           ),
@@ -54,6 +121,9 @@ class HistoryPage extends StatelessWidget {
   }
 
   Widget _entry(ReleaseEntry entry) {
+    final remote = SemVer.parse(entry.version);
+    final local = SemVer.parse(appVersion);
+    final newer = remote != null && local != null && remote.isNewerThan(local);
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(
@@ -69,6 +139,13 @@ class HistoryPage extends StatelessWidget {
               entry.title,
               style: const TextStyle(fontWeight: FontWeight.w700, color: ink),
             ),
+            if (newer) ...[
+              const SizedBox(height: 6),
+              Text(
+                '比当前安装的 $appVersion 新',
+                style: const TextStyle(color: Color(0xFF9A3412), fontSize: 13),
+              ),
+            ],
             const SizedBox(height: 6),
             Text(
               entry.published == null

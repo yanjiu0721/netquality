@@ -11,13 +11,48 @@ class ReleaseEntry {
     required this.source,
     required this.points,
     this.published,
+    this.tag,
   });
 
   final String version;
   final String title;
   final String source;
   final String? published;
+
+  /// Release tag, when this entry came from a forge. Bundled entries omit it.
+  final String? tag;
   final List<String> points;
+
+  Map<String, Object?> toJson() => {
+    'version': version,
+    'title': title,
+    'source': source,
+    'published': published,
+    'tag': tag,
+    'points': points,
+  };
+
+  factory ReleaseEntry.fromJson(Map<String, dynamic> json) {
+    final rawPoints = json['points'];
+    final points = <String>[];
+    if (rawPoints is List) {
+      for (final item in rawPoints) {
+        if (item is String && item.trim().isNotEmpty) {
+          points.add(item);
+        }
+      }
+    }
+    return ReleaseEntry(
+      version: json['version'] is String ? json['version'] as String : '',
+      title: json['title'] is String ? json['title'] as String : '',
+      source: json['source'] is String ? json['source'] as String : '',
+      published: json['published'] is String
+          ? json['published'] as String
+          : null,
+      tag: json['tag'] is String ? json['tag'] as String : null,
+      points: points,
+    );
+  }
 }
 
 const releaseHistory = <ReleaseEntry>[
@@ -66,3 +101,8 @@ const releaseHistory = <ReleaseEntry>[
 
 const releaseHistoryNote =
     '仓库里目前公开的版本标签只有 v1.1.1。1.1.1 的发布说明提到过更早的发包行为，但没有单独的标签或 Release，所以这里不写成另一个版本。';
+
+/// Already shipped installers cannot grow this screen. The sentence stays
+/// visible so the app does not imply that 1.1.2 or 1.1.3 already sync notes.
+const onlineHistoryLimitNote =
+    '已经发布的 1.1.2 和 1.1.3 安装包没有在线更新历史。那些版本不会自己同步以后的发布说明，需要先安装包含这个功能的版本。';

@@ -1,13 +1,16 @@
 // Copyright (C) 2026 言灸
 // SPDX-License-Identifier: AGPL-3.0-only
 
+import 'dart:convert';
 import 'dart:ffi' show Abi;
 import 'dart:io';
 
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../version.dart';
 import 'installer.dart';
+import 'release_feed.dart';
 import 'update_check.dart';
 
 class UpdateResult {
@@ -19,31 +22,63 @@ class UpdateResult {
 
 const platformChannel = MethodChannel('dev.netquality/platform');
 
-Future<UpdateResult> checkForUpdate() async {
+UpdateEndpoints endpointsFromEnvironment() {
+  return updateEndpoints(
+    githubApi: Platform.environment['NQ_UPDATE_GITHUB_API'],
+    giteaApi: Platform.environment['NQ_UPDATE_GITEA_API'],
+  );
+}
+
+Future<ReleaseCache?> readStoredReleaseHistory() async {
+  final prefs = await SharedPreferences.getInstance();
+  return decodeReleaseCache(prefs.getString(releaseHistoryCacheKey));
+}
+
+Future<ReleaseSync> loadReleaseHistory(
+  UpdateSource preferred, {
+  bool? allowNetwork,
+}) async {
+  final prefs = await SharedPreferences.getInstance();
+  return syncAndStore(
+    preferred: preferred,
+    endpoints: endpointsFromEnvironment(),
+    fetch: fetchReleaseText,
+    allowNetwork:
+        allowNetwork ?? Platform.environment['FLUTTER_TEST'] != 'true',
+    readCache: () async => prefs.getString(releaseHistoryCacheKey),
+    writeCache: (json) async {
+      await prefs.setString(releaseHistoryCacheKey, json);
+    },
+  );
+}
+
+Future<UpdateResult> checkForUpdate({
+  UpdateSource preferred = UpdateSource.gitea,
+}) async {
+  final history = loadReleaseHistory(preferred);
   final arch = await _arch();
   if (arch.isEmpty) {
+    await _finishHistory(history);
     return const UpdateResult(message: '认不出这台设备的系统或 CPU，没有下载安装包');
   }
-  final endpoints = UpdateEndpoints(
-    github: Platform.environment['NQ_UPDATE_GITHUB_API'] ??
-        UpdateEndpoints.githubDefault,
-    gitea: Platform.environment['NQ_UPDATE_GITEA_API'] ??
-        UpdateEndpoints.giteaDefault,
-  );
   final check = await findUpdate(
     current: appVersion,
-    endpoints: endpoints,
+    endpoints: endpointsFromEnvironment(),
+    preferred: preferred,
     os: _os(),
     arch: arch,
-    fetch: (url) => _getText(url),
+    fetch: fetchReleaseText,
   );
-  if (check.offer == null) {
-    return UpdateResult(message: check.message);
+  await _finishHistory(history);
+  return UpdateResult(message: check.message, offer: check.offer);
+}
+
+Future<void> _finishHistory(Future<ReleaseSync> history) async {
+  try {
+    await history;
+  } on Object {
+    // A failed history sync still leaves the update check usable.
   }
-  return UpdateResult(
-    message: '发现 ${check.offer!.version}。可以下载并覆盖安装。',
-    offer: check.offer,
-  );
 }
 
 Future<String> installOffer(UpdateOffer offer) async {
@@ -155,7 +190,45 @@ Future<String?> _getText(Uri url) async {
   if (bytes == null) {
     return null;
   }
-  return String.fromCharCodes(bytes);
+  return utf8.decode(bytes, allowMalformed: true);
+}
+
+/// Release JSON, not an installer. A 429, or a 403 that says the quota is
+/// gone, is reported as a rate limit so the caller can say so in Chinese.
+Future<String?> fetchReleaseText(Uri url) async {
+  final client = HttpClient();
+  client.connectionTimeout = const Duration(seconds: 15);
+  try {
+    final request = await client.getUrl(url);
+    request.headers.set(HttpHeaders.userAgentHeader, 'netquality/$appVersion');
+    request.headers.set(HttpHeaders.acceptHeader, 'application/json');
+    final response = await request.close().timeout(const Duration(seconds: 20));
+    final bytes = <int>[];
+    await for (final chunk in response.timeout(const Duration(seconds: 20))) {
+      bytes.addAll(chunk);
+    }
+    final text = utf8.decode(bytes, allowMalformed: true);
+    if (isReleaseRateLimited(
+      status: response.statusCode,
+      rateLimitRemaining: response.headers.value('x-ratelimit-remaining'),
+      body: text,
+    )) {
+      throw UpdateFetchException(
+        rateLimited: true,
+        status: response.statusCode,
+      );
+    }
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      return null;
+    }
+    return text;
+  } on UpdateFetchException {
+    rethrow;
+  } on Object {
+    return null;
+  } finally {
+    client.close(force: true);
+  }
 }
 
 Future<List<int>?> _getBytes(Uri url) async {
