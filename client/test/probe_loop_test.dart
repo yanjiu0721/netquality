@@ -6,6 +6,7 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:netquality/metrics/sample_book.dart';
 import 'package:netquality/probe/game_codec.dart';
+import 'package:netquality/probe/http_helper.dart';
 import 'package:netquality/probe/probe_loop.dart';
 import 'package:netquality/probe/remote_client.dart';
 
@@ -388,6 +389,37 @@ void main() {
     expect(samples.single.detail['statusCode'], '204');
     expect(samples.single.detail['httpVersion'], '1.1');
     expect(samples.single.summary.failurePct, 0);
+  });
+
+  test('a missing local http helper records no loss sample', () async {
+    final samples = <ProbeSample>[];
+    final loop = ProbeLoop(helperPath: '/no/such/netquality-reflector');
+    await expectLater(
+      loop.run(
+        request: const ProbeRequest(
+          host: 'http://127.0.0.1/health',
+          port: 80,
+          profileId: 'http',
+          interval: Duration(milliseconds: 200),
+          timeout: Duration(seconds: 1),
+          packetSize: 64,
+          echoToken: '',
+          dnsName: '',
+          payloadHex: '',
+          expectHex: '',
+        ),
+        onSample: samples.add,
+        cancelled: () => false,
+      ),
+      throwsA(
+        isA<LocalHttpHelperException>().having(
+          (error) => error.message,
+          'message',
+          contains('远程节点'),
+        ),
+      ),
+    );
+    expect(samples, isEmpty);
   });
 }
 

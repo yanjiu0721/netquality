@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -155,13 +156,13 @@ func (n *Node) auth(next http.HandlerFunc) http.HandlerFunc {
 }
 
 type createReq struct {
-	Target      string `json:"target"`
-	Port        int    `json:"port"`
-	Profile     string `json:"profile"`
-	IntervalMs  int    `json:"intervalMs"`
-	TimeoutMs   int    `json:"timeoutMs"`
-	DurationSec int    `json:"durationSec"`
-	PacketSize  int    `json:"packetSize"`
+	Target      string          `json:"target"`
+	Port        int             `json:"port"`
+	Profile     string          `json:"profile"`
+	IntervalMs  int             `json:"intervalMs"`
+	TimeoutMs   int             `json:"timeoutMs"`
+	DurationSec int             `json:"durationSec"`
+	PacketSize  int             `json:"packetSize"`
 	EchoToken   string          `json:"echoToken"`
 	DNSName     string          `json:"dnsName"`
 	PayloadHex  string          `json:"payloadHex"`
@@ -224,7 +225,7 @@ func (n *Node) prepare(ctx context.Context, req createReq) (jobSpec, error) {
 	}
 	allow4 := flagOrDefault(req.AllowIPv4, true)
 	allow6 := flagOrDefault(req.AllowIPv6, true)
-	if req.Port < 1 || req.Port > 65535 {
+	if req.Profile != "http" && (req.Port < 1 || req.Port > 65535) {
 		return jobSpec{}, &apiError{http.StatusBadRequest, "bad_port", "端口需要在 1 到 65535 之间"}
 	}
 	interval := time.Duration(req.IntervalMs) * time.Millisecond
@@ -279,11 +280,17 @@ func (n *Node) prepare(ctx context.Context, req createReq) (jobSpec, error) {
 	}
 	applyHTTPOptions(&httpIn, req.HTTP)
 	lookupHost := req.Target
+	resolvedPort := req.Port
 	if req.Profile == "http" {
 		page, err := buildHTTPURL(req.Target, req.Port)
 		if err != nil {
 			return jobSpec{}, &apiError{http.StatusBadRequest, "bad_target", err.Error()}
 		}
+		if p, convErr := strconv.Atoi(page.Port()); convErr == nil {
+			resolvedPort = p
+			httpIn.Port = p
+		}
+		httpIn.Target = page.String()
 		if _, err := normalizeHTTPVersion(httpIn.Version); err != nil {
 			return jobSpec{}, &apiError{http.StatusBadRequest, "bad_profile", err.Error()}
 		}
@@ -315,7 +322,7 @@ func (n *Node) prepare(ctx context.Context, req createReq) (jobSpec, error) {
 		return jobSpec{}, &apiError{http.StatusBadRequest, "bad_family", "地址族不被允许"}
 	}
 	return jobSpec{
-		Host: req.Target, Port: req.Port, Profile: req.Profile, IP: ips[0],
+		Host: req.Target, Port: resolvedPort, Profile: req.Profile, IP: ips[0],
 		state:    &dialState{picker: newEndpointPicker(ips)},
 		Interval: interval, Timeout: timeout, Duration: duration, PacketSize: size,
 		Echo: echo, DNSName: req.DNSName, Payload: payload, Expect: expect,

@@ -67,12 +67,13 @@ class _HomePageState extends State<HomePage> {
   var _ready = false;
   var _idSeq = 0;
   var _formEpoch = 0;
+  String? _portBeforeHttp;
+  String? _profileBeforeHttp;
 
   @override
   void initState() {
     super.initState();
     _controller.addListener(_rebuild);
-    _host.addListener(_onHostChanged);
     _load();
   }
 
@@ -123,20 +124,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  void _onHostChanged() {
-    if (_profileId != 'http') {
-      return;
-    }
-    final current = int.tryParse(_port.text.trim());
-    if (_port.text.trim().isNotEmpty && current != 80 && current != 443) {
-      return;
-    }
-    final next = '${httpDefaultPort(_host.text)}';
-    if (_port.text != next) {
-      _port.text = next;
-    }
-  }
-
   void _rebuild() {
     if (mounted) {
       setState(() {});
@@ -148,7 +135,6 @@ class _HomePageState extends State<HomePage> {
     unawaited(_controller.stop());
     unawaited(_persist());
     _controller.removeListener(_rebuild);
-    _host.removeListener(_onHostChanged);
     _controller.dispose();
     for (final field in [
       _host,
@@ -212,12 +198,13 @@ class _HomePageState extends State<HomePage> {
     await _persist();
     final config = _config();
     if (config.validate() == null) {
+      final httpTarget = config.httpTarget;
       _history = _history.add(
         TargetEntry(
-          host: config.host,
-          port: config.port,
+          host: httpTarget?.url ?? config.host,
+          port: httpTarget?.port ?? config.port,
           profileId: config.profileId,
-          httpUrl: config.profileId == 'http' ? config.host : '',
+          httpUrl: httpTarget?.url ?? '',
           method: config.profileId == 'http' ? config.httpMethod : '',
           savedAtMs: DateTime.now().millisecondsSinceEpoch,
         ),
@@ -241,23 +228,42 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _changeProfile(String? id) {
-    if (id == null) {
+    if (id == null || id == _profileId) {
       return;
     }
     final previous = ProbeProfile.byId(_profileId);
     final next = ProbeProfile.byId(id);
-    final currentPort = int.tryParse(_port.text.trim());
-    var previousDefault = previous.port;
-    if (_profileId == 'http' && (currentPort == 80 || currentPort == 443)) {
-      previousDefault = currentPort!;
-    }
-    final nextDefault = id == 'http' ? httpDefaultPort(_host.text) : next.port;
     setState(() {
-      _port.text = portAfterProfileChange(
-        current: _port.text,
-        previousDefault: previousDefault,
-        nextDefault: nextDefault,
+      _timeout.text = timeoutAfterProfileChange(
+        current: _timeout.text,
+        previousDefault: timeoutDefaultFor(_profileId),
+        nextDefault: timeoutDefaultFor(id),
       );
+      if (id == 'http') {
+        _portBeforeHttp = _port.text;
+        _profileBeforeHttp = _profileId;
+      } else if (_profileId == 'http' &&
+          _portBeforeHttp != null &&
+          _profileBeforeHttp != null) {
+        _port.text = portAfterProfileChange(
+          current: _portBeforeHttp!,
+          previousDefault: ProbeProfile.byId(_profileBeforeHttp!).port,
+          nextDefault: next.port,
+        );
+        _portBeforeHttp = null;
+        _profileBeforeHttp = null;
+      } else {
+        final currentPort = int.tryParse(_port.text.trim());
+        var previousDefault = previous.port;
+        if (_profileId == 'http' && (currentPort == 80 || currentPort == 443)) {
+          previousDefault = currentPort!;
+        }
+        _port.text = portAfterProfileChange(
+          current: _port.text,
+          previousDefault: previousDefault,
+          nextDefault: next.port,
+        );
+      }
       _profileId = id;
     });
   }
@@ -312,30 +318,26 @@ class _HomePageState extends State<HomePage> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      _pair(
-                        wide,
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: _field(_host, '目标地址', '域名、IP，或 http(s) 地址'),
-                            ),
-                            IconButton(
-                              key: const Key('target-history'),
-                              tooltip: '最近目标',
-                              onPressed: view.running ? null : _showHistory,
-                              icon: const Icon(Icons.history),
-                            ),
-                          ],
+                      if (profile.id == 'http')
+                        _hostRow(
+                          view.running,
+                          'https://example.com:2025/ 或 example.com',
+                          helper:
+                              '只填主机名或 IP 时按 http:// 和端口 80。完整网址使用其中的协议、端口和路径。',
+                          fieldKey: const Key('target-field'),
+                        )
+                      else
+                        _pair(
+                          wide,
+                          _hostRow(view.running, '域名、IP，或 http(s) 地址'),
+                          _field(
+                            _port,
+                            '端口',
+                            portHint(profile),
+                            fieldKey: const Key('port-field'),
+                            helper: portHelperText,
+                          ),
                         ),
-                        _field(
-                          _port,
-                          '端口',
-                          portHint(profile),
-                          fieldKey: const Key('port-field'),
-                          helper: portHelperText,
-                        ),
-                      ),
                       const SizedBox(height: 12),
                       DropdownButtonFormField<String>(
                         key: _formEpoch == 0
@@ -373,7 +375,15 @@ class _HomePageState extends State<HomePage> {
                           '间隔（毫秒）',
                           _remote ? '至少 200' : '至少 100',
                         ),
-                        _field(_timeout, '超时（毫秒）', '100–15000'),
+                        _field(
+                          _timeout,
+                          '超时（毫秒）',
+                          '100–15000',
+                          fieldKey: const Key('timeout-field'),
+                          helper: profile.id == 'http'
+                              ? 'HTTP 默认 5000 毫秒'
+                              : null,
+                        ),
                       ),
                       if (profile.needsPacketSize) ...[
                         const SizedBox(height: 12),
@@ -575,11 +585,7 @@ class _HomePageState extends State<HomePage> {
             : (value) => setState(() => _httpVersion = value ?? 'auto'),
       ),
       const SizedBox(height: 8),
-      _field(
-        _httpResolve,
-        '指定解析',
-        '可选。Host 和 SNI 仍用上面的地址，连接改走这里的 IP 或主机名',
-      ),
+      _field(_httpResolve, '指定解析', '可选。Host 和 SNI 仍用上面的地址，连接改走这里的 IP 或主机名'),
       const SizedBox(height: 12),
       DropdownButtonFormField<String>(
         key: ValueKey('http-method-$_httpMethod-$_formEpoch'),
@@ -739,13 +745,46 @@ class _HomePageState extends State<HomePage> {
   void _applyHistory(TargetEntry entry) {
     setState(() {
       _formEpoch += 1;
+      _portBeforeHttp = null;
+      _profileBeforeHttp = null;
       _profileId = entry.profileId;
-      _host.text = entry.httpUrl.isNotEmpty ? entry.httpUrl : entry.host;
+      _host.text = entry.profileId == 'http' && entry.httpUrl.isNotEmpty
+          ? entry.httpUrl
+          : entry.host;
       _port.text = '${entry.port}';
       if (entry.profileId == 'http' && entry.method.isNotEmpty) {
         _httpMethod = entry.method;
       }
+      if (entry.profileId == 'http') {
+        final current = int.tryParse(_timeout.text.trim());
+        if (current == null || current == timeoutDefaultFor('nq-tcp')) {
+          _timeout.text = '${timeoutDefaultFor('http')}';
+        }
+      }
     });
+  }
+
+  Widget _hostRow(bool running, String hint, {String? helper, Key? fieldKey}) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: _field(
+            _host,
+            '目标地址',
+            hint,
+            helper: helper,
+            fieldKey: fieldKey,
+          ),
+        ),
+        IconButton(
+          key: const Key('target-history'),
+          tooltip: '最近目标',
+          onPressed: running ? null : _showHistory,
+          icon: const Icon(Icons.history),
+        ),
+      ],
+    );
   }
 
   String _newId() {
@@ -760,13 +799,18 @@ class _HomePageState extends State<HomePage> {
     }
     var link = added.link;
     for (final existing in _centers) {
-      if (existing.url == added.link.url && existing.account == added.link.account) {
+      if (existing.url == added.link.url &&
+          existing.account == added.link.account) {
         link = existing;
         break;
       }
     }
     await _vault.write(centerTokenKey(link.id), added.token);
-    await _applyCatalog(link, added.catalog, '已添加 ${added.catalog.servers.length} 台服务器');
+    await _applyCatalog(
+      link,
+      added.catalog,
+      '已添加 ${added.catalog.servers.length} 台服务器',
+    );
   }
 
   Future<void> _refreshCenter(CenterLink link) async {
@@ -789,7 +833,10 @@ class _HomePageState extends State<HomePage> {
     }
     await _vault.delete(centerTokenKey(link.id));
     setState(() {
-      _centers = [for (final item in _centers) if (item.id != link.id) item];
+      _centers = [
+        for (final item in _centers)
+          if (item.id != link.id) item,
+      ];
       _nodes = [
         for (final node in _nodes)
           if (node.centerLinkId != link.id) node,
@@ -802,7 +849,11 @@ class _HomePageState extends State<HomePage> {
     await _persist();
   }
 
-  Future<void> _applyCatalog(CenterLink link, Catalog catalog, String hint) async {
+  Future<void> _applyCatalog(
+    CenterLink link,
+    Catalog catalog,
+    String hint,
+  ) async {
     final before = {
       for (final node in _nodes)
         if (node.centerLinkId == link.id) node.id,
@@ -843,7 +894,9 @@ class _HomePageState extends State<HomePage> {
       for (final node in _nodes)
         if (node.centerLinkId == link.id) node,
     ];
-    final title = link.account.isEmpty ? link.url : '${link.account} · ${link.url}';
+    final title = link.account.isEmpty
+        ? link.url
+        : '${link.account} · ${link.url}';
     return ExpansionTile(
       tilePadding: EdgeInsets.zero,
       title: Text(title, maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -1164,9 +1217,7 @@ class _NodeDialogState extends State<_NodeDialog> {
                     '${node.name} · ${visibilityLabel(node.visibility)}',
                   ),
                   subtitle: Text(
-                    node.confidential
-                        ? '地址由中心代为连接，本机不保存。'
-                        : node.baseUrl,
+                    node.confidential ? '地址由中心代为连接，本机不保存。' : node.baseUrl,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),

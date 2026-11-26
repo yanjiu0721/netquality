@@ -81,6 +81,43 @@ void main() {
     },
   );
 
+  testWidgets('HTTP mode uses a URL, a 5 second timeout, and no port field', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(1280, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await tester.pumpWidget(const NetQualityApp());
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.byKey(const Key('profile')));
+    await tester.tap(find.byKey(const Key('profile')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('HTTP').last);
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const Key('port-field')), findsNothing);
+    expect(find.text('HTTP 默认 5000 毫秒'), findsOneWidget);
+    expect(find.text('5000'), findsWidgets);
+    expect(
+      find.text('只填主机名或 IP 时按 http:// 和端口 80。完整网址使用其中的协议、端口和路径。'),
+      findsOneWidget,
+    );
+    expect(find.byKey(const Key('target-field')), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('timeout-field')), '2000');
+    await tester.tap(find.byKey(const Key('profile')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('合作反射 UDP').last);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('port-field')), findsOneWidget);
+    expect(find.text('19091'), findsWidgets);
+    expect(find.text('2000'), findsOneWidget);
+    expect(find.text('HTTP 默认 5000 毫秒'), findsNothing);
+  });
+
   testWidgets('editing a node keeps its id and does not reveal the token', (
     tester,
   ) async {

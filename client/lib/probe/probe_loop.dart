@@ -119,6 +119,11 @@ class ProbeLoop {
         if (!countsAfterStop(outcome, cancelled: cancelled())) {
           break;
         }
+        if (request.profileId == 'http' &&
+            outcome != null &&
+            isLocalHttpHelperFailure(outcome)) {
+          throw LocalHttpHelperException(outcome.note);
+        }
         var commit = <Outcome>[outcome!];
         if (_usesDatagram(request.profileId) && _picker != null) {
           _ledger ??= SelectionLedger(_picker!.candidates.length);

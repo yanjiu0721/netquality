@@ -332,6 +332,112 @@ func TestHelperSpeaksHTTPEngine(t *testing.T) {
 	}
 }
 
+func TestBuildHTTPURLDefaults(t *testing.T) {
+	cases := []struct {
+		target string
+		wire   int
+		scheme string
+		host   string
+		port   string
+		path   string
+		query  string
+	}{
+		{"example.com", 0, "http", "example.com", "80", "/", ""},
+		{"example.com", 80, "http", "example.com", "80", "/", ""},
+		{"example.com", 443, "http", "example.com", "443", "/", ""},
+		{"rxsend.cn", 0, "http", "rxsend.cn", "80", "/", ""},
+		{"https://www.cause-by-siky.top:2025/", 80, "https", "www.cause-by-siky.top", "2025", "/", ""},
+		{"https://www.cause-by-siky.top:2025/a?q=1", 9, "https", "www.cause-by-siky.top", "2025", "/a", "q=1"},
+		{"http://example.com/path", 0, "http", "example.com", "80", "/path", ""},
+		{"https://example.com/path", 0, "https", "example.com", "443", "/path", ""},
+		{"example.com:8080/a", 443, "http", "example.com", "8080", "/a", ""},
+		{"example.com/path?q=1", 0, "http", "example.com", "80", "/path", "q=1"},
+		{"[2001:db8::1]", 0, "http", "2001:db8::1", "80", "/", ""},
+		{"[2001:db8::1]:8080/a", 80, "http", "2001:db8::1", "8080", "/a", ""},
+		{"2001:db8::1", 0, "http", "2001:db8::1", "80", "/", ""},
+	}
+	for _, tc := range cases {
+		u, err := buildHTTPURL(tc.target, tc.wire)
+		if err != nil {
+			t.Fatalf("%s port %d: %v", tc.target, tc.wire, err)
+		}
+		if u.Scheme != tc.scheme || u.Hostname() != tc.host || u.Port() != tc.port || u.Path != tc.path || u.RawQuery != tc.query {
+			t.Fatalf("%s port %d -> %s", tc.target, tc.wire, u.String())
+		}
+	}
+	if _, err := buildHTTPURL("", 80); err == nil || !strings.Contains(err.Error(), "目标地址") {
+		t.Fatal(err)
+	}
+	if _, err := buildHTTPURL("ftp://example.com", 80); err == nil || !strings.Contains(err.Error(), "http/https") {
+		t.Fatal(err)
+	}
+	if _, err := buildHTTPURL("https://example.com:99999/", 80); err == nil || !strings.Contains(err.Error(), "端口") {
+		t.Fatal(err)
+	}
+	if _, err := buildHTTPURL("example.com", 70000); err == nil || !strings.Contains(err.Error(), "端口") {
+		t.Fatal(err)
+	}
+}
+
+func TestHTTPExplicitURLPortIgnoresField(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	out := probeHTTP(context.Background(), HTTPInput{
+		Target: srv.URL + "/health", Port: 1, Version: "1.1",
+		Allow4: true, Allow6: true, Timeout: 3 * time.Second,
+	})
+	if out.Status != statusOK || out.Detail["statusCode"] != "204" {
+		t.Fatalf("url port should win: %s %s %+v", out.Status, out.Note, out.Detail)
+	}
+	omitted := probeHTTP(context.Background(), HTTPInput{
+		Target: srv.URL + "/health", Port: 0, Version: "1.1",
+		Allow4: true, Allow6: true, Timeout: 3 * time.Second,
+	})
+	if omitted.Status != statusOK || omitted.Detail["statusCode"] != "204" {
+		t.Fatalf("omitted port: %s %s %+v", omitted.Status, omitted.Note, omitted.Detail)
+	}
+}
+
+func TestHTTPJobAcceptsURLWithoutPortField(t *testing.T) {
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer page.Close()
+	node := newNode("", true, nil, testLimits())
+	ts := httptest.NewServer(node.Handler())
+	defer ts.Close()
+	created := postJSON(t, ts.URL+"/v1/jobs", `{"target":"`+page.URL+`/","port":0,"profile":"http","intervalMs":200,"timeoutMs":1500,"durationSec":2,"http":{"version":"1.1","method":"GET"}}`)
+	defer created.Body.Close()
+	if created.StatusCode != http.StatusCreated {
+		raw, _ := io.ReadAll(created.Body)
+		t.Fatalf("http without port field %d %s", created.StatusCode, raw)
+	}
+	var job map[string]any
+	if err := json.NewDecoder(created.Body).Decode(&job); err != nil {
+		t.Fatal(err)
+	}
+	id, _ := job["jobId"].(string)
+	sample := readSampleURL(t, ts.URL+"/v1/jobs/"+id+"/stream")
+	if sample["status"] != statusOK {
+		t.Fatalf("sample %+v", sample)
+	}
+	detail, _ := sample["detail"].(map[string]any)
+	if detail["statusCode"] != "202" {
+		t.Fatalf("detail %+v", detail)
+	}
+	tcp := postJSON(t, ts.URL+"/v1/jobs", `{"target":"127.0.0.1","port":0,"profile":"tcp-connect","intervalMs":200,"timeoutMs":300,"durationSec":1}`)
+	defer tcp.Body.Close()
+	if tcp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("tcp still requires a port, got %d", tcp.StatusCode)
+	}
+}
+
 func tlsInput(target string, port int, version string, pool *x509.CertPool) HTTPInput {
 	return HTTPInput{
 		Target: target, Port: port, Version: version, Resolve: "127.0.0.1",
