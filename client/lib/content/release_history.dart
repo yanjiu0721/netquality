@@ -59,14 +59,15 @@ const releaseHistory = <ReleaseEntry>[
   ReleaseEntry(
     version: '1.1.4',
     title: '网络质量探测 1.1.4',
+    published: '2026-11-27',
     source:
-        '仓库 docs/release-notes/1.1.4.md。署名言灸。这一版的 Git 标签要等发布时才有，这里写的是即将发布的内容。',
+        'Git 标签 v1.1.4，以及仓库 docs/release-notes/1.1.4.md。署名言灸。',
     points: [
       '设置里可以选择更新源，默认是 YanJiu Git，也可以改成 GitHub。检查和下载都先用选中的源，连不上再试另一个，结果里会写明这次实际用的是哪一个。',
       '「更新历史」会读取所选源的发布列表，包括比当前安装更新的版本，并在本机留一份。网络失败时用上次保存的列表，没有保存过再用安装包里的说明，并标明可能不是最新。已经发出的 1.1.2 和 1.1.3 没有这份同步。',
       '表单里被省略号截断的提示可以点开看全文，再点一次收回。本来就显示得下的短句不用点。',
       'HTTP 目标填完整网址，或只写主机名、IP。只写主机名时按 http 和端口 80，不再单独填端口。超时默认 5000 毫秒。本机找不到探测引擎时会立刻说明，并建议改用远程节点。',
-      '桌面自更新认得已经发布的 linux-x64、windows-x64 文件名，也仍然接受 amd64、x86_64、aarch64。名字里带 server 或 reflector 的包不会被选中。1.1.3 的桌面更新器认不出 x64，升到 1.1.4 仍要手动安装。',
+      '桌面自更新认得 linux-x64、windows-x64，也仍然接受 amd64、x86_64、aarch64。Linux 安装包另有内容相同的 linux-x86_64，1.1.3 的 Linux 会选中它并自己安装。Windows 要等内容相同的 windows-x86_64 放上以后，1.1.3 的 Windows 才会自己安装。1.1.2 没有更新器，仍要手动安装。名字里带 server 或 reflector 的包不会被选中。',
     ],
   ),
   ReleaseEntry(
@@ -115,7 +116,7 @@ const releaseHistory = <ReleaseEntry>[
 ];
 
 const releaseHistoryNote =
-    '仓库里公开的版本标签有 v1.1.1、v1.1.2 和 v1.1.3。1.1.4 的标签要等发布时才有。1.1.1 的发布说明提到过更早的发包行为，但没有单独的标签或 Release，所以这里不写成另一个版本。';
+    '仓库里公开的版本标签有 v1.1.1、v1.1.2、v1.1.3 和 v1.1.4。1.1.1 的发布说明提到过更早的发包行为，但没有单独的标签或 Release，所以这里不写成另一个版本。';
 
 /// Already shipped installers cannot grow this screen. The sentence stays
 /// visible so the app does not imply that 1.1.2 or 1.1.3 already sync notes.

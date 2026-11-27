@@ -191,7 +191,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   child: Text(
-                    '当前版本 $appVersion（构建 $appBuild）。1.1.2 没有自更新，从 1.1.2 升级仍要手动安装。1.1.3 的桌面更新器认不出已经发布的 linux-x64、windows-x64 文件名，所以从 1.1.3 升到 1.1.4 仍要手动安装。这一版两种名字都认，也仍然接受 amd64、x86_64 和 aarch64。带 server 或 reflector 的包不会被选中。更新源默认是 YanJiu Git，也可以改成 GitHub。检查更新和下载都先用选中的源，连不上再试另一个，结果里会写明这次实际用的是哪一个。\n\n「更新历史」会读取所选源的发布列表，并在本机留一份。网络失败时用上次保存的列表，没有保存过再用安装包里的说明，并标明可能不是最新。已经发出的 1.1.2 和 1.1.3 安装包没有这份同步。\n\n要在没有新版本时试检查更新，可以把环境变量 NQ_UPDATE_GITHUB_API 指到一个同样格式的测试地址，NQ_UPDATE_GITEA_API 是另一个。',
+                    '当前版本 $appVersion（构建 $appBuild）。1.1.2 没有自更新，从 1.1.2 升级仍要手动安装。1.1.3 的桌面更新器认不出 linux-x64、windows-x64。这一版的 Linux 另外提供内容相同的 linux-x86_64，1.1.3 的 Linux 会选中它并自己安装。Windows 要等内容相同的 windows-x86_64 放上以后，1.1.3 的 Windows 才会自己安装。这一版两种名字都认，也仍然接受 amd64、x86_64 和 aarch64。带 server 或 reflector 的包不会被选中。更新源默认是 YanJiu Git，也可以改成 GitHub。检查更新和下载都先用选中的源，连不上再试另一个，结果里会写明这次实际用的是哪一个。\n\n「更新历史」会读取所选源的发布列表，并在本机留一份。网络失败时用上次保存的列表，没有保存过再用安装包里的说明，并标明可能不是最新。已经发出的 1.1.2 和 1.1.3 安装包没有这份同步。\n\n要在没有新版本时试检查更新，可以把环境变量 NQ_UPDATE_GITHUB_API 指到一个同样格式的测试地址，NQ_UPDATE_GITEA_API 是另一个。',
                     style: const TextStyle(
                       color: Color(0xFF5C656B),
                       fontSize: 13,
