@@ -47,6 +47,92 @@ void main() {
     expect(check.offer?.checksumName, 'SHA256SUMS');
   });
 
+  test('published x64 desktop names match, and server or reflector packages do not', () {
+    const published = [
+      ReleaseFile(name: 'netquality-1.1.3-arm64-v8a.apk', url: 'a1'),
+      ReleaseFile(name: 'netquality-1.1.3-armeabi-v7a.apk', url: 'a2'),
+      ReleaseFile(name: 'netquality-1.1.3-linux-x64.tar.gz', url: 'linux'),
+      ReleaseFile(name: 'netquality-1.1.3-release-notes.txt', url: 'notes'),
+      ReleaseFile(name: 'netquality-1.1.3-SHA256SUMS.txt', url: 'sum'),
+      ReleaseFile(name: 'netquality-1.1.3-windows-x64.zip', url: 'win'),
+      ReleaseFile(name: 'netquality-1.1.3-x86_64.apk', url: 'a3'),
+      ReleaseFile(name: 'netquality-server-1.1.3-linux-amd64.tar.gz', url: 's1'),
+      ReleaseFile(name: 'netquality-server-1.1.3-linux-arm64.tar.gz', url: 's2'),
+      ReleaseFile(name: 'netquality-server-1.1.3-windows-amd64.zip', url: 's3'),
+      ReleaseFile(name: 'netquality-reflector-1.1.3-linux-x64.tar.gz', url: 'r'),
+    ];
+    expect(
+      pickClientAsset(published, os: 'linux', arch: 'amd64'),
+      'netquality-1.1.3-linux-x64.tar.gz',
+    );
+    expect(
+      pickClientAsset(published, os: 'windows', arch: 'amd64'),
+      'netquality-1.1.3-windows-x64.zip',
+    );
+    expect(
+      pickClientAsset(published, os: 'android', arch: 'arm64-v8a'),
+      'netquality-1.1.3-arm64-v8a.apk',
+    );
+    expect(
+      pickClientAsset(published, os: 'android', arch: 'armeabi-v7a'),
+      'netquality-1.1.3-armeabi-v7a.apk',
+    );
+    expect(
+      pickClientAsset(published, os: 'android', arch: 'x86_64'),
+      'netquality-1.1.3-x86_64.apk',
+    );
+    expect(
+      pickClientAsset(const [
+        ReleaseFile(name: 'netquality-server-1.1.3-linux-amd64.tar.gz', url: 's'),
+        ReleaseFile(name: 'netquality-reflector-1.1.3-linux-x64.tar.gz', url: 'r'),
+        ReleaseFile(name: 'netquality-server-1.1.3-windows-amd64.zip', url: 's'),
+      ], os: 'linux', arch: 'amd64'),
+      isNull,
+    );
+    expect(
+      pickClientAsset(const [
+        ReleaseFile(name: 'netquality-client-1.1.4-linux-x86_64.tar.gz', url: 'c'),
+      ], os: 'linux', arch: 'amd64'),
+      'netquality-client-1.1.4-linux-x86_64.tar.gz',
+    );
+    expect(
+      pickClientAsset(const [
+        ReleaseFile(name: 'netquality-client-1.1.4-linux-aarch64.tar.gz', url: 'c'),
+      ], os: 'linux', arch: 'arm64'),
+      'netquality-client-1.1.4-linux-aarch64.tar.gz',
+    );
+    expect(
+      pickClientAsset(const [
+        ReleaseFile(name: 'netquality-client-1.1.4-windows-amd64.zip', url: 'c'),
+      ], os: 'windows', arch: 'x64'),
+      'netquality-client-1.1.4-windows-amd64.zip',
+    );
+    expect(
+      pickClientAsset(const [
+        ReleaseFile(name: 'netquality-1.1.4-linux-box64.tar.gz', url: 'no'),
+      ], os: 'linux', arch: 'amd64'),
+      isNull,
+    );
+
+    final check = interpretRelease(
+      current: '1.1.3',
+      os: 'linux',
+      arch: 'amd64',
+      body: '''
+{
+  "tag_name": "v1.1.4",
+  "assets": [
+    {"name": "netquality-server-1.1.4-linux-amd64.tar.gz", "browser_download_url": "https://example.test/server.tar.gz"},
+    {"name": "netquality-1.1.4-linux-x64.tar.gz", "browser_download_url": "https://example.test/linux.tar.gz"},
+    {"name": "netquality-1.1.4-windows-x64.zip", "browser_download_url": "https://example.test/windows.zip"}
+  ]
+}
+''',
+    );
+    expect(check.offer?.assetName, 'netquality-1.1.4-linux-x64.tar.gz');
+    expect(check.message, isNot(contains('没有适合这台设备的安装包')));
+  });
+
   test('github failure falls through to the spare source', () async {
     final check = await findUpdate(
       current: '1.1.3',

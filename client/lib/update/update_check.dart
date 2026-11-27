@@ -168,7 +168,32 @@ class UpdateCheck {
   final bool fellBack;
 }
 
-/// Picks the client archive for this OS and CPU. Server packages are ignored.
+/// A bare `x64` token, as in `linux-x64`. `x86_64` does not contain this.
+final _bareX64 = RegExp(r'(^|[^a-z0-9])x64([^a-z0-9]|$)');
+
+/// Published desktop archives use `linux-x64` and `windows-x64`. Older
+/// names used `amd64`, `x86_64`, or `aarch64`. Those still match.
+bool _desktopArchMatches(String name, String wantArch) {
+  if (name.contains(wantArch)) {
+    return true;
+  }
+  switch (wantArch) {
+    case 'amd64':
+    case 'x86_64':
+    case 'x64':
+      return name.contains('amd64') ||
+          name.contains('x86_64') ||
+          _bareX64.hasMatch(name);
+    case 'arm64':
+    case 'aarch64':
+      return name.contains('arm64') || name.contains('aarch64');
+    default:
+      return false;
+  }
+}
+
+/// Picks the client archive for this OS and CPU. Server and reflector
+/// packages are ignored.
 String? pickClientAsset(
   List<ReleaseFile> assets, {
   required String os,
@@ -187,11 +212,7 @@ String? pickClientAsset(
       }
       continue;
     }
-    final archOk =
-        name.contains(wantArch) ||
-        (wantArch == 'amd64' && name.contains('x86_64')) ||
-        (wantArch == 'arm64' && name.contains('aarch64'));
-    if (!archOk || !name.contains(wantOs)) {
+    if (!_desktopArchMatches(name, wantArch) || !name.contains(wantOs)) {
       continue;
     }
     if (wantOs == 'windows' &&

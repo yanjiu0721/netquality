@@ -480,7 +480,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('网络质量探测 9.9.9'), findsOneWidget);
-    expect(find.text('比当前安装的 1.1.3 新'), findsOneWidget);
+    expect(find.text('比当前安装的 1.1.4 新'), findsOneWidget);
     expect(find.text('网络质量探测 1.1.1'), findsNothing);
     expect(find.textContaining('已经发布的 1.1.2 和 1.1.3'), findsOneWidget);
     expect(find.textContaining('可能不是最新'), findsNothing);
