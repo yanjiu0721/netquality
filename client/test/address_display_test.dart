@@ -84,10 +84,12 @@ void main() {
   });
 
   test('history only lists the real tag and this version', () {
-    expect(appVersion, '1.1.3');
-    expect(appBuild, 6);
+    expect(appVersion, '1.1.4');
+    expect(appBuild, 7);
     expect(appAttribution, '言灸');
+    expect(releaseHistory.first.source, contains('言灸'));
     expect(releaseHistory.map((entry) => entry.version), [
+      '1.1.4',
       '1.1.3',
       '1.1.2',
       '1.1.1',

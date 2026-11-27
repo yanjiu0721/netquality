@@ -16,7 +16,9 @@ import '../probe/remote_client.dart';
 import '../storage/app_store.dart';
 import '../storage/token_vault.dart';
 import '../update/apply_update.dart';
+import '../update/update_check.dart';
 import 'address_text.dart';
+import 'expandable_hint.dart';
 import 'center_dialog.dart';
 import 'format.dart';
 import 'history_page.dart';
@@ -57,6 +59,7 @@ class _HomePageState extends State<HomePage> {
   var _allow4 = true;
   var _allow6 = true;
   var _autoUpdate = true;
+  var _updateSource = UpdateSource.gitea;
   var _centers = <CenterLink>[];
   var _history = TargetHistory.empty;
   var _centerHint = '';
@@ -79,9 +82,14 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _load() async {
     _vault = await openTokenVault();
-    final loaded = await _store.load();
     final history = await _store.loadHistory();
     final echo = await _vault.read(echoTokenKey);
+    if (!mounted) {
+      return;
+    }
+    // Read settings after the slower startup awaits, so a choice made while
+    // the vault was opening is not replaced by the older snapshot.
+    final loaded = await _store.load();
     if (!mounted) {
       return;
     }
@@ -103,6 +111,7 @@ class _HomePageState extends State<HomePage> {
       _allow4 = config.allowIPv4;
       _allow6 = config.allowIPv6;
       _autoUpdate = config.autoUpdate;
+      _updateSource = parseUpdateSource(config.updateSource);
       _httpVersion = config.httpVersion;
       _httpMethod = config.httpMethod;
       _httpResolve.text = config.httpResolve;
@@ -177,6 +186,7 @@ class _HomePageState extends State<HomePage> {
       allowIPv4: _allow4,
       allowIPv6: _allow6,
       autoUpdate: _autoUpdate,
+      updateSource: updateSourceId(_updateSource),
       httpVersion: _httpVersion,
       httpResolve: _httpResolve.text.trim(),
       httpMethod: _httpMethod,
@@ -286,7 +296,7 @@ class _HomePageState extends State<HomePage> {
                 return;
               }
               final page = value == 'history'
-                  ? const HistoryPage()
+                  ? HistoryPage(updateSource: _updateSource)
                   : const MetricGuidePage();
               Navigator.of(context)
                   .push(MaterialPageRoute<void>(builder: (_) => page));
@@ -398,8 +408,9 @@ class _HomePageState extends State<HomePage> {
                         _field(
                           _echo,
                           '目标回显口令',
-                          '可选，只放进探测包，和节点口令不是同一个',
+                          '可选',
                           secret: true,
+                          helper: '只放进探测包，和节点口令不是同一个。',
                         ),
                       ],
                       if (profile.id == 'dns') ...[
@@ -410,7 +421,12 @@ class _HomePageState extends State<HomePage> {
                         const SizedBox(height: 12),
                         _field(_payload, '载荷（十六进制）', '例如 0102'),
                         const SizedBox(height: 12),
-                        _field(_expect, '响应需以此开头（十六进制，可空）', '不填则任意响应都算成功'),
+                        _field(
+                          _expect,
+                          '响应开头（十六进制）',
+                          '可空',
+                          helper: '不填则任意响应都算成功。',
+                        ),
                       ],
                     ],
                   ),
@@ -460,7 +476,8 @@ class _HomePageState extends State<HomePage> {
                     TextButton(
                       onPressed: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
-                          builder: (_) => const HistoryPage(),
+                          builder: (_) =>
+                              HistoryPage(updateSource: _updateSource),
                         ),
                       ),
                       child: const Text('更新历史'),
@@ -585,7 +602,12 @@ class _HomePageState extends State<HomePage> {
             : (value) => setState(() => _httpVersion = value ?? 'auto'),
       ),
       const SizedBox(height: 8),
-      _field(_httpResolve, '指定解析', '可选。Host 和 SNI 仍用上面的地址，连接改走这里的 IP 或主机名'),
+      _field(
+        _httpResolve,
+        '指定解析',
+        '可选',
+        helper: 'Host 和 SNI 仍用上面的地址，连接改走这里的 IP 或主机名。',
+      ),
       const SizedBox(height: 12),
       DropdownButtonFormField<String>(
         key: ValueKey('http-method-$_httpMethod-$_formEpoch'),
@@ -642,6 +664,7 @@ class _HomePageState extends State<HomePage> {
           allowIPv4: _allow4,
           allowIPv6: _allow6,
           autoUpdate: _autoUpdate,
+          updateSource: _updateSource,
           onAllowIPv4: (value) {
             setState(() => _allow4 = value);
             unawaited(_persist());
@@ -654,13 +677,17 @@ class _HomePageState extends State<HomePage> {
             setState(() => _autoUpdate = value);
             unawaited(_persist());
           },
+          onUpdateSource: (value) {
+            setState(() => _updateSource = value);
+            unawaited(_persist());
+          },
         ),
       ),
     );
   }
 
   Future<void> _launchUpdate() async {
-    final result = await checkForUpdate();
+    final result = await checkForUpdate(preferred: _updateSource);
     final offer = result.offer;
     if (offer == null || !mounted || !_autoUpdate) {
       return;
@@ -1262,11 +1289,10 @@ class _NodeDialogState extends State<_NodeDialog> {
                 obscureText: true,
                 decoration: InputDecoration(
                   labelText: _editingId == null ? '节点口令（公开节点留空）' : '新口令（留空则保留）',
-                  helperText: _editingId == null
-                      ? null
-                      : '留空则保留已保存的口令，不会显示原口令。',
                 ),
               ),
+              if (_editingId != null)
+                const ExpandableHint(text: '留空则保留已保存的口令，不会显示原口令。'),
               if (_hint != null) ...[
                 const SizedBox(height: 8),
                 Text(_hint!, style: const TextStyle(fontSize: 13)),
@@ -1324,15 +1350,17 @@ Widget _field(
   Key? fieldKey,
   String? helper,
 }) {
-  return TextField(
-    key: fieldKey,
-    controller: controller,
-    obscureText: secret,
-    decoration: InputDecoration(
-      labelText: label,
-      hintText: hint,
-      helperText: helper,
-    ),
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      TextField(
+        key: fieldKey,
+        controller: controller,
+        obscureText: secret,
+        decoration: InputDecoration(labelText: label, hintText: hint),
+      ),
+      if (helper != null && helper.isNotEmpty) ExpandableHint(text: helper),
+    ],
   );
 }
 

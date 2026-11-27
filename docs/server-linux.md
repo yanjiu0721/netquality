@@ -63,7 +63,7 @@ ss -lunp | grep 19091
 
 ```bash
 sudo mkdir -p /opt/netquality
-sudo tar -C /opt/netquality --strip-components=1 -xzf netquality-server-1.1.3-linux-amd64.tar.gz
+sudo tar -C /opt/netquality --strip-components=1 -xzf netquality-server-1.1.4-linux-amd64.tar.gz
 sudo cp /opt/netquality/netquality.service /etc/systemd/system/netquality.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now netquality

@@ -120,6 +120,7 @@ class SessionConfig {
     this.allowIPv4 = true,
     this.allowIPv6 = true,
     this.autoUpdate = true,
+    this.updateSource = 'gitea',
     this.httpVersion = 'auto',
     this.httpResolve = '',
     this.httpMethod = 'GET',
@@ -163,6 +164,9 @@ class SessionConfig {
   final bool allowIPv4;
   final bool allowIPv6;
   final bool autoUpdate;
+
+  /// `gitea` (YanJiu Git, the default) or `github`.
+  final String updateSource;
   final String httpVersion;
   final String httpResolve;
   final String httpMethod;
@@ -306,6 +310,7 @@ class SessionConfig {
     'allowIPv4': allowIPv4,
     'allowIPv6': allowIPv6,
     'autoUpdate': autoUpdate,
+    'updateSource': updateSource == 'github' ? 'github' : 'gitea',
     'httpVersion': httpVersion,
     'httpResolve': httpResolve,
     'httpMethod': httpMethod,
@@ -352,6 +357,7 @@ class SessionConfig {
       autoUpdate: json['autoUpdate'] is bool
           ? json['autoUpdate'] as bool
           : true,
+      updateSource: json['updateSource'] == 'github' ? 'github' : 'gitea',
       httpVersion: json['httpVersion'] is String
           ? json['httpVersion'] as String
           : 'auto',

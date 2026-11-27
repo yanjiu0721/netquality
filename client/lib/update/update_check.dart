@@ -3,6 +3,65 @@
 
 import 'dart:convert';
 
+/// Where release metadata is downloaded from. YanJiu Git is the default
+/// because github.com is often blocked by DNS pollution on the user's network.
+enum UpdateSource { gitea, github }
+
+const updateSourceGitea = 'gitea';
+const updateSourceGithub = 'github';
+
+UpdateSource parseUpdateSource(String? raw) =>
+    raw == updateSourceGithub ? UpdateSource.github : UpdateSource.gitea;
+
+String updateSourceId(UpdateSource source) =>
+    source == UpdateSource.github ? updateSourceGithub : updateSourceGitea;
+
+String updateSourceLabel(UpdateSource source) =>
+    source == UpdateSource.github ? 'GitHub' : 'YanJiu Git';
+
+/// Environment variables override the live release URLs. Empty values keep
+/// the defaults, so a blank test variable does not point the client nowhere.
+UpdateEndpoints updateEndpoints({String? githubApi, String? giteaApi}) {
+  return UpdateEndpoints(
+    github: githubApi == null || githubApi.trim().isEmpty
+        ? UpdateEndpoints.githubDefault
+        : githubApi.trim(),
+    gitea: giteaApi == null || giteaApi.trim().isEmpty
+        ? UpdateEndpoints.giteaDefault
+        : giteaApi.trim(),
+  );
+}
+
+/// 429, a spent quota header, or a 403 body that says the limit was hit.
+bool isReleaseRateLimited({
+  required int status,
+  String? rateLimitRemaining,
+  required String body,
+}) {
+  if (status == 429) {
+    return true;
+  }
+  if (status != 403) {
+    return false;
+  }
+  if (rateLimitRemaining == '0') {
+    return true;
+  }
+  return body.toLowerCase().contains('rate limit');
+}
+
+/// The release API refused the request because the caller asked too often.
+class UpdateFetchException implements Exception {
+  const UpdateFetchException({required this.rateLimited, this.status});
+
+  final bool rateLimited;
+  final int? status;
+
+  @override
+  String toString() =>
+      'UpdateFetchException(rateLimited: $rateLimited, status: $status)';
+}
+
 /// Numeric version. A leading v and a +build suffix are ignored.
 class SemVer implements Comparable<SemVer> {
   const SemVer(this.major, this.minor, this.patch);
@@ -68,6 +127,9 @@ class UpdateEndpoints {
 
   final String github;
   final String gitea;
+
+  String latestFor(UpdateSource source) =>
+      source == UpdateSource.github ? github : gitea;
 }
 
 class UpdateOffer {
@@ -87,14 +149,51 @@ class UpdateOffer {
 }
 
 class UpdateCheck {
-  const UpdateCheck({this.offer, required this.reachable, this.message = ''});
+  const UpdateCheck({
+    this.offer,
+    required this.reachable,
+    this.message = '',
+    this.used,
+    this.fellBack = false,
+  });
 
   final UpdateOffer? offer;
   final bool reachable;
   final String message;
+
+  /// The source that actually answered. Null when neither source could be used.
+  final UpdateSource? used;
+
+  /// True when [used] is the spare source because the chosen one failed.
+  final bool fellBack;
 }
 
-/// Picks the client archive for this OS and CPU. Server packages are ignored.
+/// A bare `x64` token, as in `linux-x64`. `x86_64` does not contain this.
+final _bareX64 = RegExp(r'(^|[^a-z0-9])x64([^a-z0-9]|$)');
+
+/// Published desktop archives use `linux-x64` and `windows-x64`. Older
+/// names used `amd64`, `x86_64`, or `aarch64`. Those still match.
+bool _desktopArchMatches(String name, String wantArch) {
+  if (name.contains(wantArch)) {
+    return true;
+  }
+  switch (wantArch) {
+    case 'amd64':
+    case 'x86_64':
+    case 'x64':
+      return name.contains('amd64') ||
+          name.contains('x86_64') ||
+          _bareX64.hasMatch(name);
+    case 'arm64':
+    case 'aarch64':
+      return name.contains('arm64') || name.contains('aarch64');
+    default:
+      return false;
+  }
+}
+
+/// Picks the client archive for this OS and CPU. Server and reflector
+/// packages are ignored.
 String? pickClientAsset(
   List<ReleaseFile> assets, {
   required String os,
@@ -113,14 +212,11 @@ String? pickClientAsset(
       }
       continue;
     }
-    final archOk =
-        name.contains(wantArch) ||
-        (wantArch == 'amd64' && name.contains('x86_64')) ||
-        (wantArch == 'arm64' && name.contains('aarch64'));
-    if (!archOk || !name.contains(wantOs)) {
+    if (!_desktopArchMatches(name, wantArch) || !name.contains(wantOs)) {
       continue;
     }
-    if (wantOs == 'windows' && (name.endsWith('.zip') || name.endsWith('.exe'))) {
+    if (wantOs == 'windows' &&
+        (name.endsWith('.zip') || name.endsWith('.exe'))) {
       return asset.name;
     }
     if (wantOs == 'linux' &&
@@ -182,7 +278,8 @@ UpdateCheck interpretRelease({
   if (pickedName == null) {
     return UpdateCheck(
       reachable: true,
-      message: '发现 ${remote.major}.${remote.minor}.${remote.patch}，但没有适合这台设备的安装包',
+      message:
+          '发现 ${remote.major}.${remote.minor}.${remote.patch}，但没有适合这台设备的安装包',
     );
   }
   final picked = assets.firstWhere((asset) => asset.name == pickedName);
@@ -205,33 +302,140 @@ UpdateCheck interpretRelease({
   );
 }
 
+enum _SourceFailure { down, rate }
+
+/// Asks [preferred] first. A source that answers, even with "already current",
+/// is kept. The other source is used only when the chosen one cannot be read,
+/// and the message names the source that actually answered.
 Future<UpdateCheck> findUpdate({
   required String current,
   required UpdateEndpoints endpoints,
+  required UpdateSource preferred,
   required Future<String?> Function(Uri url) fetch,
+  required String os,
+  required String arch,
+}) async {
+  final order = preferred == UpdateSource.github
+      ? const [UpdateSource.github, UpdateSource.gitea]
+      : const [UpdateSource.gitea, UpdateSource.github];
+  var sawRate = false;
+  var sawDown = false;
+  _SourceFailure? preferredFailure;
+  for (var i = 0; i < order.length; i++) {
+    final source = order[i];
+    final outcome = await _readLatest(
+      url: endpoints.latestFor(source),
+      fetch: fetch,
+      current: current,
+      os: os,
+      arch: arch,
+    );
+    final failure = outcome.failure;
+    if (failure == null) {
+      final check = outcome.check!;
+      final fellBack = i > 0;
+      return UpdateCheck(
+        reachable: true,
+        offer: check.offer,
+        used: source,
+        fellBack: fellBack,
+        message: _withSource(
+          check,
+          _sourceClause(
+            used: source,
+            fellBack: fellBack,
+            preferredFailure: preferredFailure,
+          ),
+        ),
+      );
+    }
+    if (i == 0) {
+      preferredFailure = failure;
+    }
+    if (failure == _SourceFailure.rate) {
+      sawRate = true;
+    } else {
+      sawDown = true;
+    }
+  }
+  return UpdateCheck(reachable: false, message: _bothFailed(sawRate, sawDown));
+}
+
+class _LatestOutcome {
+  const _LatestOutcome.ok(this.check) : failure = null;
+  const _LatestOutcome.fail(this.failure) : check = null;
+
+  final UpdateCheck? check;
+  final _SourceFailure? failure;
+}
+
+Future<_LatestOutcome> _readLatest({
+  required String url,
+  required Future<String?> Function(Uri url) fetch,
+  required String current,
   required String os,
   required String arch,
 }) async {
   String? body;
   try {
-    body = await fetch(Uri.parse(endpoints.github));
+    body = await fetch(Uri.parse(url));
+  } on UpdateFetchException catch (error) {
+    if (error.rateLimited) {
+      return const _LatestOutcome.fail(_SourceFailure.rate);
+    }
+    return const _LatestOutcome.fail(_SourceFailure.down);
   } on Object {
-    body = null;
+    return const _LatestOutcome.fail(_SourceFailure.down);
   }
-  var check = interpretRelease(current: current, body: body, os: os, arch: arch);
+  if (body == null) {
+    return const _LatestOutcome.fail(_SourceFailure.down);
+  }
+  final check = interpretRelease(
+    current: current,
+    body: body,
+    os: os,
+    arch: arch,
+  );
   if (!check.reachable) {
-    try {
-      body = await fetch(Uri.parse(endpoints.gitea));
-    } on Object {
-      body = null;
-    }
-    check = interpretRelease(current: current, body: body, os: os, arch: arch);
-    if (!check.reachable) {
-      return const UpdateCheck(
-        reachable: false,
-        message: 'GitHub 和备用源都连不上，没有检查到更新',
-      );
-    }
+    return const _LatestOutcome.fail(_SourceFailure.down);
   }
-  return check;
+  return _LatestOutcome.ok(check);
+}
+
+String _sourceClause({
+  required UpdateSource used,
+  required bool fellBack,
+  required _SourceFailure? preferredFailure,
+}) {
+  final usedLabel = updateSourceLabel(used);
+  if (!fellBack) {
+    return '这次用的是 $usedLabel';
+  }
+  final preferredLabel = updateSourceLabel(
+    used == UpdateSource.github ? UpdateSource.gitea : UpdateSource.github,
+  );
+  if (preferredFailure == _SourceFailure.rate) {
+    return '$preferredLabel 暂时限制了请求次数，这次用的是 $usedLabel';
+  }
+  return '$preferredLabel 连不上，这次用的是 $usedLabel';
+}
+
+String _withSource(UpdateCheck check, String clause) {
+  if (check.offer != null) {
+    return '发现 ${check.offer!.version}。可以下载并覆盖安装。（$clause）';
+  }
+  if (check.message.isEmpty) {
+    return clause;
+  }
+  return '${check.message}（$clause）';
+}
+
+String _bothFailed(bool sawRate, bool sawDown) {
+  if (sawRate && sawDown) {
+    return '所选更新源暂时限制了请求次数，另一个也连不上，没有检查到更新';
+  }
+  if (sawRate) {
+    return 'YanJiu Git 和 GitHub 都暂时限制了请求次数，请稍后再试';
+  }
+  return 'YanJiu Git 和 GitHub 都连不上，没有检查到更新';
 }
